@@ -37,7 +37,7 @@ jobs:
 
       - name: Build APK
         run: |
-          buildozer android debug > build.log 2>&1 || {
+          yes | buildozer android debug > build.log 2>&1 || {
             echo "===== BUILD ERROR ====="
             tail -n 120 build.log
             exit 1
