@@ -1,6 +1,6 @@
 [app]
 
-title = Messi App
+title = Moh_sud game
 package.name = messiapp
 package.domain = org.example
 
