@@ -23,3 +23,4 @@ warn_on_root = 1
 
 android.archs = arm64-v8a
 android.minapi = 23
+android.accept_sdk_license = True
