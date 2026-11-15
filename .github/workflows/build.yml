@@ -39,7 +39,8 @@ jobs:
         run: |
           yes | buildozer android debug > build.log 2>&1 || {
             echo "===== BUILD ERROR ====="
-            tail -n 120 build.log
+            grep -niE 'error|exception|failed|not found|license|aidl|traceback' build.log | tail -n 40 || true
+            tail -n 40 build.log
             exit 1
           }
 
