@@ -1,28 +1,52 @@
-[app]
+name: Build Messi App APK
 
-title = Messi App
-package.name = messiapp
-package.domain = org.example
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
 
-source.dir = .
-source.include_exts = py,png,jpg,jpeg,kv,atlas
+jobs:
+  build:
+    runs-on: ubuntu-22.04
 
-version = 0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-requirements = python3,kivy
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-orientation = portrait
-fullscreen = 0
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-android.archs = arm64-v8a
-android.minapi = 24
-android.api = 36
-android.ndk = 29
-android.accept_sdk_license = True
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip openjdk-17-jdk python3-pip autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev automake
 
-p4a.branch = develop
+      - name: Install Buildozer
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install buildozer Cython==0.29.34 virtualenv
 
-[buildozer]
+      - name: Build APK
+        run: |
+          yes | buildozer android debug > build.log 2>&1 || {
+            echo "===== BUILD ERROR ====="
+            grep -niE 'error|exception|failed|not found|license|aidl|traceback' build.log | tail -n 40 || true
+            tail -n 40 build.log
+            exit 1
+          }
 
-log_level = 2
-warn_on_root = 1
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Messi-App
+          path: bin/*.apk
+          if-no-files-found: error
