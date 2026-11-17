@@ -1,7 +1,7 @@
 [app]
 
 title = Moh_sud game
-package.name = messiapp
+package.name = Moahmmed_app
 package.domain = org.example
 
 source.dir = .
