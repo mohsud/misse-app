@@ -1,15 +1,26 @@
 """
-AEGIS PATH: MERGE & ELIXIR (PLAYABLE BALANCED COMBAT)
-Portrait Mobile-Ready Lane Defense + Merge + Elixir Game in Python 3.13 & Pygame.
-Touch/Mouse-only controls (no keyboard required).
+AEGIS PATH: MERGE & ELIXIR (KIVY EDITION - NO PYGAME REQUIRED)
+Portrait Mobile Lane Defense + Merge + Elixir Game in Python & Kivy.
+Touch/Mouse-only controls.
 """
 
-import math
-import random
 import array
+import io
+import math
+import os
+import random
+import tempfile
+import wave
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
-import pygame
+from typing import Dict, List, Optional, Tuple
+
+from kivy.app import App
+from kivy.clock import Clock
+from kivy.core.audio import SoundLoader
+from kivy.core.text import Label as CoreLabel
+from kivy.core.window import Window
+from kivy.graphics import Color, Ellipse, Line, Mesh, Rectangle
+from kivy.uix.widget import Widget
 
 # ==============================================================================
 # 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS
@@ -17,51 +28,53 @@ import pygame
 
 SCREEN_WIDTH = 540
 SCREEN_HEIGHT = 960
-FPS = 60
+FPS = 60.0
 TITLE = "AEGIS PATH // Merge & Elixir"
 
-# Split Screen Layout (Portrait)
 TOP_BAR_H = 74
 ARENA_TOP = TOP_BAR_H
 ARENA_BOTTOM = 592
 DECK_TOP = ARENA_BOTTOM
 
-# Colors
-BG_DARK = (9, 12, 20)
-BG_TILE_ALT = (13, 17, 28)
-BG_DECOR = (24, 33, 52)
-BG_LANE = (24, 30, 46)
-BG_LANE_INNER = (19, 24, 37)
-LANE_CURB_DARK = (34, 44, 66)
-LANE_CURB_LIGHT = (76, 102, 146)
-LANE_CENTER = (62, 92, 136)
-LANE_BORDER = (52, 68, 98)
-SHADOW_COLOR = (4, 6, 10, 130)
 
-PANEL_BG = (14, 18, 29)
-SLOT_BG = (22, 29, 45)
-SLOT_BORDER = (64, 84, 118)
+def rgb(r: int, g: int, b: int, a: float = 1.0) -> Tuple[float, float, float, float]:
+    return (r / 255.0, g / 255.0, b / 255.0, a)
 
-WHITE = (244, 248, 255)
-BLACK = (6, 8, 12)
-GRAY = (132, 145, 168)
-CYAN = (0, 235, 255)
-BLUE = (65, 145, 255)
-PURPLE = (185, 75, 255)
-PINK = (255, 65, 165)
-RED = (255, 60, 75)
-ORANGE = (255, 140, 30)
-YELLOW = (255, 215, 45)
-GREEN = (55, 245, 140)
-ICE = (110, 220, 255)
 
-# Slow, Deliberate Elixir Economy
+BG_DARK = rgb(9, 12, 20)
+BG_TILE_ALT = rgb(13, 17, 28)
+BG_DECOR = rgb(24, 33, 52)
+BG_LANE = rgb(24, 30, 46)
+BG_LANE_INNER = rgb(19, 24, 37)
+LANE_CURB_DARK = rgb(34, 44, 66)
+LANE_CURB_LIGHT = rgb(76, 102, 146)
+LANE_CENTER = rgb(62, 92, 136)
+LANE_BORDER = rgb(52, 68, 98)
+SHADOW_COLOR = rgb(4, 6, 10, 0.52)
+
+PANEL_BG = rgb(14, 18, 29)
+SLOT_BG = rgb(22, 29, 45)
+SLOT_BORDER = rgb(64, 84, 118)
+
+WHITE = rgb(244, 248, 255)
+BLACK = rgb(6, 8, 12)
+GRAY = rgb(132, 145, 168)
+CYAN = rgb(0, 235, 255)
+BLUE = rgb(65, 145, 255)
+PURPLE = rgb(185, 75, 255)
+PINK = rgb(255, 65, 165)
+RED = rgb(255, 60, 75)
+ORANGE = rgb(255, 140, 30)
+YELLOW = rgb(255, 215, 45)
+GREEN = rgb(55, 245, 140)
+ICE = rgb(110, 220, 255)
+
 MAX_ELIXIR = 10.0
 ELIXIR_REGEN_PER_SEC = 0.22
 
 
 # ==============================================================================
-# 2. MATH, SPLINE PATH & DRAWING HELPERS
+# 2. MATH, SPLINE PATH & COORDINATE CONVERSION
 # ==============================================================================
 
 def clamp(v: float, lo: float, hi: float) -> float:
@@ -77,6 +90,11 @@ def norm(dx: float, dy: float) -> Tuple[float, float]:
     if d == 0:
         return 0.0, 0.0
     return dx / d, dy / d
+
+
+def to_ky(y: float) -> float:
+    """Convert top-down logical y (0 at top) to Kivy y (0 at bottom)."""
+    return SCREEN_HEIGHT - y
 
 
 def catmull_rom_point(
@@ -154,158 +172,88 @@ TOWER_PADS: List[Tuple[float, float]] = [
 DOCK_SLOTS_COUNT = 6
 
 
-def draw_poly(
-    surf: pygame.Surface,
-    color: Tuple[int, int, int],
-    center: Tuple[float, float],
-    radius: float,
-    sides: int,
-    angle: float = 0.0,
-    width: int = 0,
-):
-    pts = []
-    for i in range(sides):
-        a = angle + (2.0 * math.pi * i) / sides
-        pts.append((center[0] + math.cos(a) * radius, center[1] + math.sin(a) * radius))
-    if len(pts) >= 3:
-        pygame.draw.polygon(surf, color, pts, width)
-
-
-def draw_drop_shadow(surf: pygame.Surface, center: Tuple[float, float], radius: float, offset_y: float = 5.0):
-    r = max(4, int(radius * 1.15))
-    s = pygame.Surface((r * 2 + 6, r * 2 + 6), pygame.SRCALPHA)
-    pygame.draw.ellipse(s, SHADOW_COLOR, (3, 3, r * 2, int(r * 1.55)))
-    surf.blit(s, (int(center[0] - r - 3), int(center[1] + offset_y - r * 0.75)))
-
-
-def draw_unit_art(
-    surf: pygame.Surface,
-    unit_type: str,
-    tier: int,
-    color: Tuple[int, int, int],
-    center: Tuple[float, float],
-    angle: float,
-    with_shadow: bool = True,
-):
-    rad = 15.0 + (tier - 1) * 1.2
-    if with_shadow:
-        draw_drop_shadow(surf, center, rad, 5.0)
-
-    depth_c = (center[0], center[1] + 4.0)
-
-    if unit_type == "sniper":
-        sq_ang = angle + math.pi / 4.0
-        draw_poly(surf, LANE_CURB_DARK, depth_c, rad * 1.08, 4, sq_ang, 0)
-        draw_poly(surf, BLACK, center, rad * 1.08, 4, sq_ang, 0)
-        draw_poly(surf, color, center, rad * 1.08, 4, sq_ang, 3)
-        draw_poly(surf, color, center, rad * 0.45, 4, angle, 0)
-        bx = center[0] + math.cos(angle) * (rad + 10)
-        by = center[1] + math.sin(angle) * (rad + 10)
-        pygame.draw.line(surf, WHITE, center, (bx, by), 4)
-        sx = center[0] + math.cos(angle) * (rad * 0.55) - math.sin(angle) * 5.0
-        sy = center[1] + math.sin(angle) * (rad * 0.55) + math.cos(angle) * 5.0
-        pygame.draw.circle(surf, color, (int(sx), int(sy)), 3)
-
-    elif unit_type == "gatling":
-        draw_poly(surf, LANE_CURB_DARK, depth_c, rad * 1.16, 3, angle, 0)
-        draw_poly(surf, BLACK, center, rad * 1.16, 3, angle, 0)
-        draw_poly(surf, color, center, rad * 1.16, 3, angle, 3)
-        pygame.draw.circle(surf, WHITE, (int(center[0]), int(center[1])), 4)
-        px = -math.sin(angle) * 4.5
-        py = math.cos(angle) * 4.5
-        for sign in (-1.0, 1.0):
-            s_pt = (center[0] + px * sign, center[1] + py * sign)
-            e_pt = (
-                center[0] + px * sign + math.cos(angle) * (rad + 6),
-                center[1] + py * sign + math.sin(angle) * (rad + 6),
-            )
-            pygame.draw.line(surf, WHITE, s_pt, e_pt, 2)
-
-    else:  # mortar (Hexagon)
-        draw_poly(surf, LANE_CURB_DARK, depth_c, rad * 1.10, 6, angle, 0)
-        draw_poly(surf, BLACK, center, rad * 1.10, 6, angle, 0)
-        draw_poly(surf, color, center, rad * 1.10, 6, angle, 3)
-        draw_poly(surf, color, center, rad * 0.62, 6, -angle * 0.5, 2)
-        bx = center[0] + math.cos(angle) * (rad + 7)
-        by = center[1] + math.sin(angle) * (rad + 7)
-        pygame.draw.line(surf, WHITE, center, (bx, by), 6)
-        pygame.draw.circle(surf, color, (int(bx), int(by)), 4, 2)
-
-
-def draw_ring_pulse(
-    surf: pygame.Surface,
-    color: Tuple[int, int, int],
-    center: Tuple[float, float],
-    radius: float,
-    alpha: int,
-    width: int = 3,
-):
-    r = max(2, int(radius))
-    s = pygame.Surface((r * 2 + 10, r * 2 + 10), pygame.SRCALPHA)
-    pygame.draw.circle(s, (*color, clamp(alpha, 0, 255)), (r + 5, r + 5), r, width)
-    surf.blit(s, (int(center[0] - r - 5), int(center[1] - r - 5)))
-
-
 # ==============================================================================
-# 3. PROCEDURAL AUDIO SYNTHESIZER (NO EXTERNAL ASSETS)
+# 3. PROCEDURAL WAV AUDIO ENGINE VIA KIVY SOUNDLOADER
 # ==============================================================================
 
 class AudioEngine:
     def __init__(self):
-        self.enabled = False
-        self.sounds: Dict[str, pygame.mixer.Sound] = {}
-        try:
-            pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
-            self.enabled = True
-            self._build_sounds()
-        except Exception:
-            self.enabled = False
+        self.sounds: Dict[str, object] = {}
+        self._temp_files: List[str] = []
+        self._build_sounds()
 
-    def _tone(
+    def _make_wav_file(
         self,
+        name: str,
         dur: float,
         f0: float,
         f1: float,
-        wave: str = "sine",
+        wave_type: str = "sine",
         vol: float = 0.2,
         decay: float = 1.3,
-    ) -> Optional[pygame.mixer.Sound]:
-        if not self.enabled:
-            return None
+    ):
         sr = 22050
         n = max(1, int(sr * dur))
-        buf = array.array("h", [0] * n)
+        samples = array.array("h", [0] * n)
         phase = 0.0
         for i in range(n):
             t = i / max(1, n - 1)
             freq = f0 + (f1 - f0) * t
             phase += (2.0 * math.pi * freq) / sr
-            if wave == "sine":
-                s = math.sin(phase)
-            elif wave == "square":
+            if wave_type == "square":
                 s = 1.0 if math.sin(phase) >= 0 else -1.0
-            elif wave == "saw":
+            elif wave_type == "saw":
                 s = 2.0 * ((phase / (2.0 * math.pi)) % 1.0) - 1.0
             else:
                 s = math.sin(phase)
             env = ((1.0 - t) ** decay) * vol
-            buf[i] = int(max(-32767, min(32767, s * env * 32767)))
-        return pygame.mixer.Sound(buffer=buf)
+            samples[i] = int(clamp(s * env * 32767.0, -32767.0, 32767.0))
+
+        mem = io.BytesIO()
+        with wave.open(mem, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sr)
+            wf.writeframes(samples.tobytes())
+
+        try:
+            fd, path = tempfile.mkstemp(prefix=f"aegis_{name}_", suffix=".wav")
+            with os.fdopen(fd, "wb") as out:
+                out.write(mem.getvalue())
+            self._temp_files.append(path)
+            snd = SoundLoader.load(path)
+            if snd:
+                self.sounds[name] = snd
+        except Exception:
+            pass
 
     def _build_sounds(self):
-        self.sounds["sniper"] = self._tone(0.12, 340, 70, "saw", 0.21, 1.5)
-        self.sounds["gatling"] = self._tone(0.05, 680, 340, "square", 0.11, 1.8)
-        self.sounds["mortar"] = self._tone(0.18, 190, 52, "saw", 0.24, 1.2)
-        self.sounds["merge"] = self._tone(0.28, 360, 920, "sine", 0.25, 0.8)
-        self.sounds["spawn"] = self._tone(0.14, 240, 520, "sine", 0.18, 1.1)
-        self.sounds["enemy_hit"] = self._tone(0.05, 420, 180, "sine", 0.09, 1.6)
-        self.sounds["enemy_die"] = self._tone(0.19, 310, 65, "saw", 0.20, 1.3)
-        self.sounds["base_hit"] = self._tone(0.32, 140, 42, "square", 0.32, 1.0)
-        self.sounds["nova"] = self._tone(0.42, 950, 160, "sine", 0.26, 0.7)
+        self._make_wav_file("sniper", 0.12, 340, 70, "saw", 0.21, 1.5)
+        self._make_wav_file("gatling", 0.05, 680, 340, "square", 0.11, 1.8)
+        self._make_wav_file("mortar", 0.18, 190, 52, "saw", 0.24, 1.2)
+        self._make_wav_file("merge", 0.28, 360, 920, "sine", 0.25, 0.8)
+        self._make_wav_file("spawn", 0.14, 240, 520, "sine", 0.18, 1.1)
+        self._make_wav_file("enemy_hit", 0.05, 420, 180, "sine", 0.09, 1.6)
+        self._make_wav_file("enemy_die", 0.19, 310, 65, "saw", 0.20, 1.3)
+        self._make_wav_file("base_hit", 0.32, 140, 42, "square", 0.32, 1.0)
+        self._make_wav_file("nova", 0.42, 950, 160, "sine", 0.26, 0.7)
 
     def play(self, name: str):
-        if self.enabled and name in self.sounds and self.sounds[name]:
-            self.sounds[name].play()
+        snd = self.sounds.get(name)
+        if snd is not None:
+            try:
+                snd.stop()
+                snd.play()
+            except Exception:
+                pass
+
+    def cleanup(self):
+        for p in self._temp_files:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
 
 
 # ==============================================================================
@@ -318,7 +266,7 @@ class Particle:
     y: float
     vx: float
     vy: float
-    color: Tuple[int, int, int]
+    color: Tuple[float, float, float, float]
     size: float
     life: float
     max_life: float
@@ -331,19 +279,13 @@ class Particle:
         self.life -= dt
         return self.life > 0
 
-    def draw(self, surf: pygame.Surface, shake: Tuple[int, int]):
-        ratio = clamp(self.life / self.max_life, 0.0, 1.0)
-        r = max(1, int(self.size * ratio))
-        col = (int(self.color[0] * ratio), int(self.color[1] * ratio), int(self.color[2] * ratio))
-        pygame.draw.circle(surf, col, (int(self.x + shake[0]), int(self.y + shake[1])), r)
-
 
 @dataclass
 class Shockwave:
     x: float
     y: float
     max_radius: float
-    color: Tuple[int, int, int]
+    color: Tuple[float, float, float, float]
     life: float = 0.35
     max_life: float = 0.35
 
@@ -351,19 +293,13 @@ class Shockwave:
         self.life -= dt
         return self.life > 0
 
-    def draw(self, surf: pygame.Surface, shake: Tuple[int, int]):
-        prog = 1.0 - clamp(self.life / self.max_life, 0.0, 1.0)
-        r = 6 + self.max_radius * prog
-        alpha = int((1.0 - prog) * 190)
-        draw_ring_pulse(surf, self.color, (self.x + shake[0], self.y + shake[1]), r, alpha, 3)
-
 
 @dataclass
 class FloatingPopup:
     x: float
     y: float
     text: str
-    color: Tuple[int, int, int]
+    color: Tuple[float, float, float, float]
     life: float = 0.75
     vy: float = -42.0
 
@@ -371,12 +307,6 @@ class FloatingPopup:
         self.y += self.vy * dt
         self.life -= dt
         return self.life > 0
-
-    def draw(self, surf: pygame.Surface, font: pygame.font.Font, shake: Tuple[int, int]):
-        alpha = int(clamp(self.life / 0.75, 0.0, 1.0) * 255)
-        img = font.render(self.text, True, self.color)
-        img.set_alpha(alpha)
-        surf.blit(img, img.get_rect(center=(int(self.x + shake[0]), int(self.y + shake[1]))))
 
 
 # ==============================================================================
@@ -390,7 +320,7 @@ class LaneEnemy:
     hp: float
     speed: float
     radius: float
-    color: Tuple[int, int, int]
+    color: Tuple[float, float, float, float]
     base_dmg: int
     elixir_reward: float
     score_reward: int
@@ -404,7 +334,6 @@ class LaneEnemy:
     @classmethod
     def create(cls, kind: str, wave: int) -> "LaneEnemy":
         scale = 1.0 + (wave - 1) * 0.24
-        # Playable enemy HP & speeds while keeping slow elixir drops
         specs = {
             "runner": (88.0, 58.0, 13.0, RED, 1, 0.06, 25),
             "swift": (62.0, 86.0, 11.0, ORANGE, 1, 0.08, 35),
@@ -449,31 +378,6 @@ class LaneEnemy:
 
         return self.seg_idx >= len(LANE_POINTS) - 1
 
-    def draw(self, surf: pygame.Surface, font: pygame.font.Font, shake: Tuple[int, int]):
-        cx = self.x + shake[0]
-        cy = self.y + shake[1]
-        draw_drop_shadow(surf, (cx, cy), self.radius, 4.5)
-
-        col = WHITE if self.hit_flash > 0 else (ICE if self.slow_timer > 0 else self.color)
-        sides = 8 if self.kind == "boss" else (6 if self.kind == "brute" else (3 if self.kind == "swift" else 4))
-
-        draw_poly(surf, LANE_CURB_DARK, (cx, cy + 3.5), self.radius, sides, self.spin, 0)
-        draw_poly(surf, BLACK, (cx, cy), self.radius, sides, self.spin, 0)
-        draw_poly(surf, col, (cx, cy), self.radius, sides, self.spin, 3)
-        pygame.draw.circle(surf, col, (int(cx), int(cy)), max(3, int(self.radius * 0.35)))
-
-        bw = max(24.0, self.radius * 2.1)
-        bh = 5.0 if self.kind != "boss" else 7.0
-        bx = cx - bw / 2.0
-        by = cy - self.radius - 12.0
-        pygame.draw.rect(surf, (35, 40, 55), (bx, by, bw, bh), border_radius=2)
-        ratio = clamp(self.hp / max(1.0, self.max_hp), 0.0, 1.0)
-        pygame.draw.rect(surf, col, (bx, by, bw * ratio, bh), border_radius=2)
-
-        if self.kind == "boss":
-            lbl = font.render("BOSS", True, PINK)
-            surf.blit(lbl, lbl.get_rect(center=(cx, by - 10)))
-
 
 @dataclass
 class LaneProjectile:
@@ -482,7 +386,7 @@ class LaneProjectile:
     vx: float
     vy: float
     damage: float
-    color: Tuple[int, int, int]
+    color: Tuple[float, float, float, float]
     radius: float = 5.0
     splash_radius: float = 0.0
     slow_duration: float = 0.0
@@ -500,12 +404,6 @@ class LaneProjectile:
         self.x += self.vx * dt
         self.y += self.vy * dt
         return True
-
-    def draw(self, surf: pygame.Surface, shake: Tuple[int, int]):
-        cx, cy = int(self.x + shake[0]), int(self.y + shake[1])
-        draw_drop_shadow(surf, (cx, cy), self.radius * 0.8, 3.0)
-        pygame.draw.circle(surf, self.color, (cx, cy), int(self.radius))
-        pygame.draw.circle(surf, WHITE, (cx, cy), max(2, int(self.radius * 0.45)))
 
 
 # ==============================================================================
@@ -558,7 +456,7 @@ class DefenseUnit:
     recoil: float = 0.0
 
     @property
-    def color(self) -> Tuple[int, int, int]:
+    def color(self) -> Tuple[float, float, float, float]:
         tier_cols = {
             1: UNIT_META[self.unit_type]["color"],
             2: BLUE,
@@ -663,72 +561,73 @@ class DefenseUnit:
                         )
                     )
 
-    def draw(
-        self,
-        surf: pygame.Surface,
-        font: pygame.font.Font,
-        center: Tuple[float, float],
-        shake: Tuple[int, int],
-        show_name: bool = True,
-    ):
-        cx = center[0] + shake[0] - math.cos(self.aim_angle) * self.recoil
-        cy = center[1] + shake[1] - math.sin(self.aim_angle) * self.recoil
-        rad = 15.0 + (self.tier - 1) * 1.2
-
-        draw_unit_art(surf, self.unit_type, self.tier, self.color, (cx, cy), self.aim_angle, with_shadow=True)
-
-        t_lbl = font.render(f"T{self.tier}", True, WHITE)
-        surf.blit(t_lbl, t_lbl.get_rect(center=(center[0] + shake[0], center[1] + shake[1])))
-
-        if show_name:
-            name_lbl = font.render(str(UNIT_META[self.unit_type]["name"]), True, self.color)
-            surf.blit(name_lbl, name_lbl.get_rect(center=(center[0] + shake[0], center[1] + shake[1] + rad + 12)))
-
 
 # ==============================================================================
-# 7. MAIN PORTRAIT GAME ENGINE
+# 7. KIVY CANVAS WIDGET & GAME ENGINE
 # ==============================================================================
 
-class AegisPathGame:
-    def __init__(self):
-        pygame.init()
-        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption(TITLE)
-        self.clock = pygame.time.Clock()
+@dataclass
+class RectBox:
+    x: float
+    y: float
+    w: float
+    h: float
 
-        self.font_title = pygame.font.SysFont("consolas", 34, bold=True)
-        self.font_lg = pygame.font.SysFont("consolas", 22, bold=True)
-        self.font_md = pygame.font.SysFont("consolas", 16, bold=True)
-        self.font_sm = pygame.font.SysFont("consolas", 12, bold=True)
+    @property
+    def right(self) -> float:
+        return self.x + self.w
+
+    @property
+    def bottom(self) -> float:
+        return self.y + self.h
+
+    @property
+    def centerx(self) -> float:
+        return self.x + self.w * 0.5
+
+    @property
+    def centery(self) -> float:
+        return self.y + self.h * 0.5
+
+    def collidepoint(self, px: float, py: float) -> bool:
+        return self.x <= px <= self.x + self.w and self.y <= py <= self.y + self.h
+
+
+class AegisPathWidget(Widget):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.size_hint = (None, None)
+        self.size = (SCREEN_WIDTH, SCREEN_HEIGHT)
 
         self.audio = AudioEngine()
         self.state = "TITLE"
 
-        self.btn_guide = pygame.Rect(SCREEN_WIDTH - 96, 12, 82, 24)
-        self.btn_close_guide = pygame.Rect(SCREEN_WIDTH // 2 - 90, SCREEN_HEIGHT - 115, 180, 48)
+        self.btn_guide = RectBox(SCREEN_WIDTH - 96, 12, 82, 24)
+        self.btn_close_guide = RectBox(SCREEN_WIDTH // 2 - 90, SCREEN_HEIGHT - 115, 180, 48)
 
-        self.dock_rects: List[pygame.Rect] = []
+        self.dock_rects: List[RectBox] = []
         slot_w, slot_h = 74, 78
         gap = 10
         total_w = DOCK_SLOTS_COUNT * slot_w + (DOCK_SLOTS_COUNT - 1) * gap
         start_x = (SCREEN_WIDTH - total_w) // 2
         for i in range(DOCK_SLOTS_COUNT):
-            self.dock_rects.append(pygame.Rect(start_x + i * (slot_w + gap), DECK_TOP + 10, slot_w, slot_h))
+            self.dock_rects.append(RectBox(start_x + i * (slot_w + gap), DECK_TOP + 10, slot_w, slot_h))
 
         btn_y = DECK_TOP + 98
         btn_w, btn_h = 162, 58
-        self.spawn_btns: List[Tuple[str, pygame.Rect]] = [
-            ("sniper", pygame.Rect(16, btn_y, btn_w, btn_h)),
-            ("gatling", pygame.Rect(189, btn_y, btn_w, btn_h)),
-            ("mortar", pygame.Rect(362, btn_y, btn_w, btn_h)),
+        self.spawn_btns: List[Tuple[str, RectBox]] = [
+            ("sniper", RectBox(16, btn_y, btn_w, btn_h)),
+            ("gatling", RectBox(189, btn_y, btn_w, btn_h)),
+            ("mortar", RectBox(362, btn_y, btn_w, btn_h)),
         ]
 
         up_y = DECK_TOP + 168
-        self.btn_up_sniper = pygame.Rect(16, up_y, 162, 46)
-        self.btn_up_gatling = pygame.Rect(189, up_y, 162, 46)
-        self.btn_nova = pygame.Rect(362, up_y, 162, 46)
+        self.btn_up_sniper = RectBox(16, up_y, 162, 46)
+        self.btn_up_gatling = RectBox(189, up_y, 162, 46)
+        self.btn_nova = RectBox(362, up_y, 162, 46)
 
         self.reset_game()
+        Clock.schedule_interval(self.step, 1.0 / FPS)
 
     def reset_game(self):
         self.elixir = 2.0
@@ -749,7 +648,7 @@ class AegisPathGame:
         self.dock_units: List[Optional[DefenseUnit]] = [None] * DOCK_SLOTS_COUNT
 
         self.drag_source: Optional[Tuple[str, int]] = None
-        self.drag_pos: Tuple[int, int] = (0, 0)
+        self.drag_pos: Tuple[float, float] = (0.0, 0.0)
 
         self.enemies: List[LaneEnemy] = []
         self.projectiles: List[LaneProjectile] = []
@@ -782,7 +681,7 @@ class AegisPathGame:
     def _add_shake(self, amt: float):
         self.shake_mag = min(14.0, self.shake_mag + amt)
 
-    def _spawn_burst(self, x: float, y: float, col: Tuple[int, int, int], count: int = 12):
+    def _spawn_burst(self, x: float, y: float, col: Tuple[float, float, float, float], count: int = 12):
         for _ in range(count):
             a = random.uniform(0, math.pi * 2)
             spd = random.uniform(45, 190)
@@ -869,81 +768,92 @@ class AegisPathGame:
             self._spawn_burst(e.x, e.y, ICE, 8)
         self.popups.append(FloatingPopup(SCREEN_WIDTH / 2, 290, "FROST NOVA!", ICE))
 
-    def handle_events(self) -> bool:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                return False
+    def _to_logical_xy(self, touch) -> Tuple[float, float]:
+        scale_x = SCREEN_WIDTH / max(1.0, float(self.width))
+        scale_y = SCREEN_HEIGHT / max(1.0, float(self.height))
+        lx = (touch.x - self.x) * scale_x
+        ly = SCREEN_HEIGHT - ((touch.y - self.y) * scale_y)
+        return lx, ly
 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mx, my = event.pos
-                if self.state == "TITLE":
-                    self.reset_game()
-                    self.state = "PLAYING"
-                    return True
+    def on_touch_down(self, touch):
+        mx, my = self._to_logical_xy(touch)
+        if self.state == "TITLE":
+            self.reset_game()
+            self.state = "PLAYING"
+            return True
 
-                if self.state == "GUIDE":
-                    if self.btn_close_guide.collidepoint(mx, my):
-                        self.state = "PLAYING"
-                    return True
+        if self.state == "GUIDE":
+            if self.btn_close_guide.collidepoint(mx, my):
+                self.state = "PLAYING"
+            return True
 
-                if self.state == "GAME_OVER":
-                    self.reset_game()
-                    self.state = "PLAYING"
-                    return True
+        if self.state == "GAME_OVER":
+            self.reset_game()
+            self.state = "PLAYING"
+            return True
 
-                if self.btn_guide.collidepoint(mx, my):
-                    self.drag_source = None
-                    self.state = "GUIDE"
-                    return True
+        if self.btn_guide.collidepoint(mx, my):
+            self.drag_source = None
+            self.state = "GUIDE"
+            return True
 
-                for utype, rect in self.spawn_btns:
-                    if rect.collidepoint(mx, my):
-                        self._spawn_unit_to_dock(utype)
-                        return True
+        for utype, rect in self.spawn_btns:
+            if rect.collidepoint(mx, my):
+                self._spawn_unit_to_dock(utype)
+                return True
 
-                if self.btn_up_sniper.collidepoint(mx, my) and self.elixir >= self.sniper_up_cost:
-                    self.elixir -= self.sniper_up_cost
-                    self.sniper_up_lvl += 1
-                    self.sniper_up_cost += 2
-                    self.audio.play("merge")
-                    self.popups.append(FloatingPopup(self.btn_up_sniper.centerx, self.btn_up_sniper.top - 10, f"SNIPER LV.{self.sniper_up_lvl}", CYAN))
-                    return True
+        if self.btn_up_sniper.collidepoint(mx, my) and self.elixir >= self.sniper_up_cost:
+            self.elixir -= self.sniper_up_cost
+            self.sniper_up_lvl += 1
+            self.sniper_up_cost += 2
+            self.audio.play("merge")
+            self.popups.append(FloatingPopup(self.btn_up_sniper.centerx, self.btn_up_sniper.y - 10, f"SNIPER LV.{self.sniper_up_lvl}", CYAN))
+            return True
 
-                if self.btn_up_gatling.collidepoint(mx, my) and self.elixir >= self.gatling_up_cost:
-                    self.elixir -= self.gatling_up_cost
-                    self.gatling_up_lvl += 1
-                    self.gatling_up_cost += 2
-                    self.audio.play("merge")
-                    self.popups.append(FloatingPopup(self.btn_up_gatling.centerx, self.btn_up_gatling.top - 10, f"GATLING LV.{self.gatling_up_lvl}", YELLOW))
-                    return True
+        if self.btn_up_gatling.collidepoint(mx, my) and self.elixir >= self.gatling_up_cost:
+            self.elixir -= self.gatling_up_cost
+            self.gatling_up_lvl += 1
+            self.gatling_up_cost += 2
+            self.audio.play("merge")
+            self.popups.append(FloatingPopup(self.btn_up_gatling.centerx, self.btn_up_gatling.y - 10, f"GATLING LV.{self.gatling_up_lvl}", YELLOW))
+            return True
 
-                if self.btn_nova.collidepoint(mx, my) and self.nova_charge >= 100.0:
-                    self._trigger_frost_nova()
-                    return True
+        if self.btn_nova.collidepoint(mx, my) and self.nova_charge >= 100.0:
+            self._trigger_frost_nova()
+            return True
 
-                for i, pt in enumerate(TOWER_PADS):
-                    if self.pad_units[i] is not None and dist(mx, my, pt[0], pt[1]) <= 26.0:
-                        self.drag_source = ("pad", i)
-                        self.drag_pos = (mx, my)
-                        return True
+        for i, pt in enumerate(TOWER_PADS):
+            if self.pad_units[i] is not None and dist(mx, my, pt[0], pt[1]) <= 28.0:
+                self.drag_source = ("pad", i)
+                self.drag_pos = (mx, my)
+                touch.grab(self)
+                return True
 
-                for i, rect in enumerate(self.dock_rects):
-                    if self.dock_units[i] is not None and rect.collidepoint(mx, my):
-                        self.drag_source = ("dock", i)
-                        self.drag_pos = (mx, my)
-                        return True
+        for i, rect in enumerate(self.dock_rects):
+            if self.dock_units[i] is not None and rect.collidepoint(mx, my):
+                self.drag_source = ("dock", i)
+                self.drag_pos = (mx, my)
+                touch.grab(self)
+                return True
 
-            elif event.type == pygame.MOUSEMOTION:
-                if self.drag_source is not None:
-                    self.drag_pos = event.pos
+        return super().on_touch_down(touch)
 
-            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                if self.drag_source is not None:
-                    dst = self._find_drop_target(event.pos[0], event.pos[1])
-                    self._handle_drop(self.drag_source, dst)
-                    self.drag_source = None
+    def on_touch_move(self, touch):
+        if touch.grab_current == self and self.drag_source is not None:
+            self.drag_pos = self._to_logical_xy(touch)
+            return True
+        return super().on_touch_move(touch)
 
-        return True
+    def on_touch_up(self, touch):
+        if touch.grab_current == self:
+            touch.ungrab(self)
+            if self.drag_source is not None:
+                mx, my = self._to_logical_xy(touch)
+                dst = self._find_drop_target(mx, my)
+                self._handle_drop(self.drag_source, dst)
+                self.drag_source = None
+            return True
+        return super().on_touch_up(touch)
 
     def update(self, dt: float):
         self.shake_mag = max(0.0, self.shake_mag - dt * 35.0)
@@ -1031,138 +941,243 @@ class AegisPathGame:
                 surviving.append(e)
         self.enemies = surviving
 
-    def _shake_offset(self) -> Tuple[int, int]:
+    def _shake_offset(self) -> Tuple[float, float]:
         if self.shake_mag <= 0.2:
-            return 0, 0
-        return int(random.uniform(-self.shake_mag, self.shake_mag)), int(random.uniform(-self.shake_mag, self.shake_mag))
+            return 0.0, 0.0
+        return random.uniform(-self.shake_mag, self.shake_mag), random.uniform(-self.shake_mag, self.shake_mag)
 
-    def _draw_top_hud(self):
-        pygame.draw.rect(self.screen, PANEL_BG, (0, 0, SCREEN_WIDTH, TOP_BAR_H))
-        pygame.draw.line(self.screen, LANE_BORDER, (0, TOP_BAR_H), (SCREEN_WIDTH, TOP_BAR_H), 2)
+    def _poly_outline_coords(self, cx: float, cy: float, radius: float, sides: int, angle: float) -> List[float]:
+        coords: List[float] = []
+        for i in range(sides):
+            a = angle + (2.0 * math.pi * i) / sides
+            px = cx + math.cos(a) * radius
+            py = to_ky(cy + math.sin(a) * radius)
+            coords.extend([px, py])
+        return coords
 
-        base_txt = self.font_lg.render(f"BASE: {self.base_hp}/{self.max_base_hp}", True, GREEN if self.base_hp > 6 else RED)
-        wave_txt = self.font_lg.render(f"WAVE {self.wave}", True, CYAN)
-        score_txt = self.font_md.render(f"SCORE {self.score}", True, YELLOW)
+    def _draw_poly(
+        self,
+        cx: float,
+        cy: float,
+        radius: float,
+        sides: int,
+        angle: float,
+        color: Tuple[float, float, float, float],
+    ):
+        verts: List[float] = []
+        indices: List[int] = []
+        for i in range(sides):
+            a = angle + (2.0 * math.pi * i) / sides
+            px = cx + math.cos(a) * radius
+            py = to_ky(cy + math.sin(a) * radius)
+            verts.extend([px, py, 0.0, 0.0])
+            indices.append(i)
+        Color(*color)
+        Mesh(vertices=verts, indices=indices, mode="triangle_fan")
 
-        self.screen.blit(base_txt, (16, 22))
-        self.screen.blit(wave_txt, wave_txt.get_rect(center=(SCREEN_WIDTH // 2 - 20, 36)))
-        self.screen.blit(score_txt, (SCREEN_WIDTH - score_txt.get_width() - 16, 44))
+    def _draw_circle(
+        self,
+        cx: float,
+        cy: float,
+        radius: float,
+        color: Tuple[float, float, float, float],
+        outline: Optional[Tuple[float, float, float, float]] = None,
+        width: float = 2.0,
+    ):
+        ky = to_ky(cy)
+        Color(*color)
+        Ellipse(pos=(cx - radius, ky - radius), size=(radius * 2.0, radius * 2.0))
+        if outline is not None:
+            Color(*outline)
+            Line(circle=(cx, ky, radius), width=width)
 
-        pygame.draw.rect(self.screen, SLOT_BG, self.btn_guide, border_radius=5)
-        pygame.draw.rect(self.screen, CYAN, self.btn_guide, 2, border_radius=5)
-        g_lbl = self.font_sm.render("GUIDE", True, CYAN)
-        self.screen.blit(g_lbl, g_lbl.get_rect(center=self.btn_guide.center))
+    def _draw_rect(
+        self,
+        box: RectBox,
+        fill: Tuple[float, float, float, float],
+        border: Optional[Tuple[float, float, float, float]] = None,
+        width: float = 2.0,
+    ):
+        ky_bottom = to_ky(box.bottom)
+        Color(*fill)
+        Rectangle(pos=(box.x, ky_bottom), size=(box.w, box.h))
+        if border is not None:
+            Color(*border)
+            Line(rectangle=(box.x, ky_bottom, box.w, box.h), width=width)
 
-    def _draw_lane_and_pads(self, shake: Tuple[int, int]):
-        pygame.draw.rect(self.screen, BG_DARK, (0, ARENA_TOP, SCREEN_WIDTH, ARENA_BOTTOM - ARENA_TOP))
+    def _draw_label(
+        self,
+        text: str,
+        cx: float,
+        cy: float,
+        color: Tuple[float, float, float, float],
+        font_size: int = 13,
+        align_left: bool = False,
+        align_right: bool = False,
+    ):
+        lbl = CoreLabel(text=text, font_size=font_size, bold=True, color=color)
+        lbl.refresh()
+        tex = lbl.texture
+        if tex is None:
+            return
+        w, h = tex.size
+        if align_left:
+            x = cx
+        elif align_right:
+            x = cx - w
+        else:
+            x = cx - w * 0.5
+        y = to_ky(cy) - h * 0.5
+        Color(1, 1, 1, 1)
+        Rectangle(texture=tex, pos=(x, y), size=(w, h))
+
+    def _draw_unit_art(self, unit: DefenseUnit, cx: float, cy: float, show_name: bool = True):
+        rad = 15.0 + (unit.tier - 1) * 1.2
+        angle = unit.aim_angle
+        col = unit.color
+
+        self._draw_circle(cx, cy + 4.5, rad * 1.05, SHADOW_COLOR)
+
+        if unit.unit_type == "sniper":
+            sq_ang = angle + math.pi / 4.0
+            self._draw_poly(cx, cy, rad * 1.08, 4, sq_ang, BLACK)
+            Color(*col)
+            Line(points=self._poly_outline_coords(cx, cy, rad * 1.08, 4, sq_ang), close=True, width=2.2)
+            self._draw_poly(cx, cy, rad * 0.45, 4, angle, col)
+            bx = cx + math.cos(angle) * (rad + 10)
+            by = cy + math.sin(angle) * (rad + 10)
+            Color(*WHITE)
+            Line(points=[cx, to_ky(cy), bx, to_ky(by)], width=2.5)
+        elif unit.unit_type == "gatling":
+            self._draw_poly(cx, cy, rad * 1.16, 3, angle, BLACK)
+            Color(*col)
+            Line(points=self._poly_outline_coords(cx, cy, rad * 1.16, 3, angle), close=True, width=2.2)
+            self._draw_circle(cx, cy, 4.0, WHITE)
+            px = -math.sin(angle) * 4.5
+            py = math.cos(angle) * 4.5
+            Color(*WHITE)
+            for sign in (-1.0, 1.0):
+                sx, sy = cx + px * sign, cy + py * sign
+                ex, ey = sx + math.cos(angle) * (rad + 6), sy + math.sin(angle) * (rad + 6)
+                Line(points=[sx, to_ky(sy), ex, to_ky(ey)], width=1.6)
+        else:
+            self._draw_poly(cx, cy, rad * 1.10, 6, angle, BLACK)
+            Color(*col)
+            Line(points=self._poly_outline_coords(cx, cy, rad * 1.10, 6, angle), close=True, width=2.2)
+            Line(points=self._poly_outline_coords(cx, cy, rad * 0.62, 6, -angle * 0.5), close=True, width=1.6)
+            bx = cx + math.cos(angle) * (rad + 7)
+            by = cy + math.sin(angle) * (rad + 7)
+            Color(*WHITE)
+            Line(points=[cx, to_ky(cy), bx, to_ky(by)], width=3.5)
+
+        self._draw_label(f"T{unit.tier}", cx, cy, WHITE, font_size=11)
+        if show_name:
+            self._draw_label(str(UNIT_META[unit.unit_type]["name"]), cx, cy + rad + 12, col, font_size=11)
+
+    def _draw_lane_and_pads(self, shake: Tuple[float, float]):
+        self._draw_rect(RectBox(0, ARENA_TOP, SCREEN_WIDTH, ARENA_BOTTOM - ARENA_TOP), BG_DARK)
         tile = 54
         for gx in range(0, SCREEN_WIDTH, tile):
             for gy in range(ARENA_TOP, ARENA_BOTTOM, tile):
                 if ((gx // tile) + (gy // tile)) % 2 == 0:
-                    pygame.draw.rect(self.screen, BG_TILE_ALT, (gx + shake[0], gy + shake[1], tile, tile))
-                pygame.draw.circle(self.screen, BG_DECOR, (gx + shake[0], gy + shake[1]), 2)
+                    self._draw_rect(RectBox(gx + shake[0], gy + shake[1], tile, tile), BG_TILE_ALT)
+                self._draw_circle(gx + shake[0], gy + shake[1], 2.0, BG_DECOR)
 
-        pts = [(p[0] + shake[0], p[1] + shake[1]) for p in LANE_POINTS]
-        shadow_pts = [(p[0], p[1] + 7) for p in pts]
-        pygame.draw.lines(self.screen, SHADOW_COLOR, False, shadow_pts, 40)
-        pygame.draw.lines(self.screen, LANE_CURB_DARK, False, pts, 38)
-        pygame.draw.lines(self.screen, LANE_CURB_LIGHT, False, pts, 34)
-        pygame.draw.lines(self.screen, BG_LANE, False, pts, 29)
-        pygame.draw.lines(self.screen, BG_LANE_INNER, False, pts, 18)
-        pygame.draw.lines(self.screen, LANE_CENTER, False, pts, 2)
+        pts_ky: List[float] = []
+        shadow_ky: List[float] = []
+        for p in LANE_POINTS:
+            px, py = p[0] + shake[0], p[1] + shake[1]
+            pts_ky.extend([px, to_ky(py)])
+            shadow_ky.extend([px, to_ky(py + 7)])
 
-        sx, sy = pts[0]
-        draw_drop_shadow(self.screen, (sx, sy), 18, 4.0)
-        draw_ring_pulse(self.screen, RED, (sx, sy), 18, 180, 2)
-        pygame.draw.circle(self.screen, RED, (int(sx), int(sy)), 7)
+        Color(*SHADOW_COLOR)
+        Line(points=shadow_ky, width=18)
+        Color(*LANE_CURB_DARK)
+        Line(points=pts_ky, width=17)
+        Color(*LANE_CURB_LIGHT)
+        Line(points=pts_ky, width=15)
+        Color(*BG_LANE)
+        Line(points=pts_ky, width=13)
+        Color(*BG_LANE_INNER)
+        Line(points=pts_ky, width=8)
+        Color(*LANE_CENTER)
+        Line(points=pts_ky, width=1.5)
 
-        bx, by = pts[-1]
-        draw_drop_shadow(self.screen, (bx, by), 24, 6.0)
-        draw_poly(self.screen, LANE_CURB_DARK, (bx, by + 5), 24, 6, 0.2, 0)
-        draw_poly(self.screen, GREEN, (bx, by), 22, 6, 0.2, 3)
-        pygame.draw.circle(self.screen, GREEN, (int(bx), int(by)), 8)
-        b_lbl = self.font_sm.render("BASE", True, GREEN)
-        self.screen.blit(b_lbl, b_lbl.get_rect(center=(bx, by + 34)))
+        sx, sy = LANE_POINTS[0][0] + shake[0], LANE_POINTS[0][1] + shake[1]
+        self._draw_circle(sx, sy, 18.0, SHADOW_COLOR)
+        self._draw_circle(sx, sy, 7.0, RED, outline=RED, width=2.0)
+
+        bx, by = LANE_POINTS[-1][0] + shake[0], LANE_POINTS[-1][1] + shake[1]
+        self._draw_circle(bx, by, 24.0, SHADOW_COLOR)
+        self._draw_poly(bx, by, 22.0, 6, 0.2, GREEN)
+        self._draw_circle(bx, by, 8.0, GREEN)
+        self._draw_label("BASE", bx, by + 34, GREEN, font_size=12)
 
         for idx, pt in enumerate(TOWER_PADS):
             px, py = pt[0] + shake[0], pt[1] + shake[1]
             u = self.pad_units[idx]
             pad_col = u.color if u is not None else SLOT_BORDER
-            draw_drop_shadow(self.screen, (px, py), 21, 4.0)
-            pygame.draw.circle(self.screen, LANE_CURB_DARK, (int(px), int(py + 3)), 21)
-            pygame.draw.circle(self.screen, SLOT_BG, (int(px), int(py)), 21)
-            pygame.draw.circle(self.screen, pad_col, (int(px), int(py)), 21, 2)
+            self._draw_circle(px, py + 3.0, 21.0, LANE_CURB_DARK)
+            self._draw_circle(px, py, 21.0, SLOT_BG, outline=pad_col, width=2.0)
             if u is not None:
-                u.draw(self.screen, self.font_sm, pt, shake, show_name=True)
+                ux = px - math.cos(u.aim_angle) * u.recoil
+                uy = py - math.sin(u.aim_angle) * u.recoil
+                self._draw_unit_art(u, ux, uy, show_name=True)
+
+    def _draw_top_hud(self):
+        self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, TOP_BAR_H), PANEL_BG)
+        Color(*LANE_BORDER)
+        Line(points=[0, to_ky(TOP_BAR_H), SCREEN_WIDTH, to_ky(TOP_BAR_H)], width=1.5)
+
+        base_col = GREEN if self.base_hp > 6 else RED
+        self._draw_label(f"BASE: {self.base_hp}/{self.max_base_hp}", 16, 32, base_col, font_size=18, align_left=True)
+        self._draw_label(f"WAVE {self.wave}", SCREEN_WIDTH * 0.5 - 20, 36, CYAN, font_size=18)
+        self._draw_label(f"SCORE {self.score}", SCREEN_WIDTH - 16, 48, YELLOW, font_size=15, align_right=True)
+
+        self._draw_rect(self.btn_guide, SLOT_BG, border=CYAN, width=1.5)
+        self._draw_label("GUIDE", self.btn_guide.centerx, self.btn_guide.centery, CYAN, font_size=11)
 
     def _draw_bottom_deck(self):
-        pygame.draw.rect(self.screen, PANEL_BG, (0, DECK_TOP, SCREEN_WIDTH, SCREEN_HEIGHT - DECK_TOP))
-        pygame.draw.line(self.screen, CYAN, (0, DECK_TOP), (SCREEN_WIDTH, DECK_TOP), 3)
+        self._draw_rect(RectBox(0, DECK_TOP, SCREEN_WIDTH, SCREEN_HEIGHT - DECK_TOP), PANEL_BG)
+        Color(*CYAN)
+        Line(points=[0, to_ky(DECK_TOP), SCREEN_WIDTH, to_ky(DECK_TOP)], width=2.0)
 
         bar_x, bar_y, bar_w, bar_h = 16, DECK_TOP - 22, SCREEN_WIDTH - 32, 16
-        pygame.draw.rect(self.screen, (20, 24, 36), (bar_x, bar_y, bar_w, bar_h), border_radius=6)
-        fill_w = int(bar_w * clamp(self.elixir / MAX_ELIXIR, 0.0, 1.0))
+        self._draw_rect(RectBox(bar_x, bar_y, bar_w, bar_h), rgb(20, 24, 36), border=WHITE, width=1.2)
+        fill_w = bar_w * clamp(self.elixir / MAX_ELIXIR, 0.0, 1.0)
         if fill_w > 0:
-            pygame.draw.rect(self.screen, PURPLE, (bar_x, bar_y, fill_w, bar_h), border_radius=6)
-        pygame.draw.rect(self.screen, WHITE, (bar_x, bar_y, bar_w, bar_h), 1, border_radius=6)
-        el_lbl = self.font_sm.render(f"ELIXIR: {self.elixir:.1f} / {int(MAX_ELIXIR)}", True, WHITE)
-        self.screen.blit(el_lbl, (bar_x + 8, bar_y + 1))
+            self._draw_rect(RectBox(bar_x, bar_y, fill_w, bar_h), PURPLE)
+        self._draw_label(f"ELIXIR: {self.elixir:.1f} / {int(MAX_ELIXIR)}", bar_x + 8, bar_y + 8, WHITE, font_size=11, align_left=True)
 
         for i, rect in enumerate(self.dock_rects):
             u = self.dock_units[i]
             bcol = u.color if u is not None else SLOT_BORDER
-            pygame.draw.rect(self.screen, SLOT_BG, rect, border_radius=8)
-            pygame.draw.rect(self.screen, bcol, rect, 2, border_radius=8)
+            self._draw_rect(rect, SLOT_BG, border=bcol, width=1.5)
             if u is not None:
-                u.draw(
-                    self.screen,
-                    self.font_sm,
-                    (float(rect.centerx), float(rect.centery) - 6.0),
-                    (0, 0),
-                    show_name=False,
-                )
-                n_txt = self.font_sm.render(str(UNIT_META[u.unit_type]["name"]), True, u.color)
-                self.screen.blit(n_txt, n_txt.get_rect(center=(rect.centerx, rect.bottom - 10)))
+                self._draw_unit_art(u, rect.centerx, rect.centery - 6.0, show_name=False)
+                self._draw_label(str(UNIT_META[u.unit_type]["name"]), rect.centerx, rect.bottom - 10, u.color, font_size=11)
 
         for utype, rect in self.spawn_btns:
             meta = UNIT_META[utype]
             cost = int(meta["cost"])
             col = meta["color"]  # type: ignore
             can_buy = self.elixir >= cost
-            pygame.draw.rect(self.screen, SLOT_BG if can_buy else (22, 24, 30), rect, border_radius=8)
-            pygame.draw.rect(self.screen, col if can_buy else GRAY, rect, 2, border_radius=8)
-            n_surf = self.font_md.render(f"{meta['name']} ({cost})", True, col if can_buy else GRAY)
-            s_surf = self.font_sm.render(f"{meta['shape_name']} | {meta['tag']}", True, WHITE if can_buy else GRAY)
-            self.screen.blit(n_surf, n_surf.get_rect(center=(rect.centerx, rect.y + 18)))
-            self.screen.blit(s_surf, s_surf.get_rect(center=(rect.centerx, rect.y + 40)))
+            self._draw_rect(rect, SLOT_BG if can_buy else rgb(22, 24, 30), border=col if can_buy else GRAY, width=1.5)
+            self._draw_label(f"{meta['name']} ({cost})", rect.centerx, rect.y + 18, col if can_buy else GRAY, font_size=14)
+            self._draw_label(f"{meta['shape_name']} | {meta['tag']}", rect.centerx, rect.y + 40, WHITE if can_buy else GRAY, font_size=11)
 
         self._draw_action_btn(self.btn_up_sniper, f"SNIPER+ ({self.sniper_up_cost})", f"LVL {self.sniper_up_lvl}", CYAN, self.elixir >= self.sniper_up_cost)
         self._draw_action_btn(self.btn_up_gatling, f"GATLING+ ({self.gatling_up_cost})", f"LVL {self.gatling_up_lvl}", YELLOW, self.elixir >= self.gatling_up_cost)
-        nova_ready = self.nova_charge >= 100.0
-        self._draw_action_btn(self.btn_nova, "FROST NOVA", f"{int(self.nova_charge)}%", ICE, nova_ready)
+        self._draw_action_btn(self.btn_nova, "FROST NOVA", f"{int(self.nova_charge)}%", ICE, self.nova_charge >= 100.0)
 
-    def _draw_action_btn(
-        self,
-        rect: pygame.Rect,
-        title: str,
-        sub: str,
-        col: Tuple[int, int, int],
-        active: bool,
-    ):
-        pygame.draw.rect(self.screen, SLOT_BG if active else (20, 23, 30), rect, border_radius=7)
-        pygame.draw.rect(self.screen, col if active else GRAY, rect, 2, border_radius=7)
-        t1 = self.font_sm.render(title, True, col if active else GRAY)
-        t2 = self.font_sm.render(sub, True, WHITE if active else GRAY)
-        self.screen.blit(t1, t1.get_rect(center=(rect.centerx, rect.y + 14)))
-        self.screen.blit(t2, t2.get_rect(center=(rect.centerx, rect.y + 32)))
+    def _draw_action_btn(self, rect: RectBox, title: str, sub: str, col: Tuple[float, float, float, float], active: bool):
+        self._draw_rect(rect, SLOT_BG if active else rgb(20, 23, 30), border=col if active else GRAY, width=1.5)
+        self._draw_label(title, rect.centerx, rect.y + 14, col if active else GRAY, font_size=11)
+        self._draw_label(sub, rect.centerx, rect.y + 32, WHITE if active else GRAY, font_size=11)
 
     def _draw_guide_modal(self):
-        ov = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        ov.fill((8, 11, 18, 240))
-        self.screen.blit(ov, (0, 0))
-
-        hdr = self.font_lg.render("UNIT & TACTICS GUIDE", True, CYAN)
-        self.screen.blit(hdr, hdr.get_rect(center=(SCREEN_WIDTH // 2, 75)))
+        self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), rgb(8, 11, 18, 0.95))
+        self._draw_label("UNIT & TACTICS GUIDE", SCREEN_WIDTH * 0.5, 75, CYAN, font_size=20)
 
         entries = [
             ("sniper", "SNIPER [SQUARE]", "Cost 3 - 1 heavy shot, high dmg", CYAN, 165),
@@ -1170,11 +1185,10 @@ class AegisPathGame:
             ("mortar", "MORTAR [HEXAGON]", "Cost 7 - AoE blast + slow enemies", GREEN, 365),
         ]
         for utype, title_txt, desc_txt, col, yy in entries:
-            draw_unit_art(self.screen, utype, 1, col, (62.0, float(yy)), -0.4, with_shadow=False)
-            t_s = self.font_md.render(title_txt, True, col)
-            d_s = self.font_sm.render(desc_txt, True, WHITE)
-            self.screen.blit(t_s, (105, yy - 16))
-            self.screen.blit(d_s, (105, yy + 6))
+            dummy = DefenseUnit(utype, tier=1, aim_angle=-0.4)
+            self._draw_unit_art(dummy, 62.0, float(yy), show_name=False)
+            self._draw_label(title_txt, 105, yy - 14, col, font_size=15, align_left=True)
+            self._draw_label(desc_txt, 105, yy + 8, WHITE, font_size=12, align_left=True)
 
         rules = [
             "MERGE: Drag same type & tier onto each other -> Tier up!",
@@ -1183,84 +1197,99 @@ class AegisPathGame:
             "NOVA: 100% slows & damages all lane enemies.",
         ]
         for i, line in enumerate(rules):
-            rs = self.font_sm.render(line, True, GRAY if i % 2 else WHITE)
-            self.screen.blit(rs, (32, 455 + i * 34))
+            self._draw_label(line, 32, 455 + i * 34, GRAY if i % 2 else WHITE, font_size=12, align_left=True)
 
-        pygame.draw.rect(self.screen, SLOT_BG, self.btn_close_guide, border_radius=8)
-        pygame.draw.rect(self.screen, GREEN, self.btn_close_guide, 2, border_radius=8)
-        c_lbl = self.font_md.render("BACK TO GAME", True, GREEN)
-        self.screen.blit(c_lbl, c_lbl.get_rect(center=self.btn_close_guide.center))
-
-    def _draw_title(self):
-        self.screen.fill(BG_DARK)
-        t1 = self.font_title.render("AEGIS PATH", True, CYAN)
-        t2 = self.font_lg.render("MERGE & ELIXIR DEFENSE", True, PURPLE)
-        go = self.font_lg.render("TAP ANYWHERE TO START", True, GREEN)
-        self.screen.blit(t1, t1.get_rect(center=(SCREEN_WIDTH // 2, 340)))
-        self.screen.blit(t2, t2.get_rect(center=(SCREEN_WIDTH // 2, 385)))
-        self.screen.blit(go, go.get_rect(center=(SCREEN_WIDTH // 2, 520)))
-
-    def _draw_game_over(self):
-        ov = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-        ov.fill((10, 8, 16, 215))
-        self.screen.blit(ov, (0, 0))
-        t1 = self.font_title.render("BASE FALLEN", True, RED)
-        s1 = self.font_lg.render(f"SCORE: {self.score}   |   WAVE: {self.wave}", True, WHITE)
-        s2 = self.font_md.render("TAP TO PLAY AGAIN", True, CYAN)
-        self.screen.blit(t1, t1.get_rect(center=(SCREEN_WIDTH // 2, 360)))
-        self.screen.blit(s1, s1.get_rect(center=(SCREEN_WIDTH // 2, 420)))
-        self.screen.blit(s2, s2.get_rect(center=(SCREEN_WIDTH // 2, 500)))
+        self._draw_rect(self.btn_close_guide, SLOT_BG, border=GREEN, width=2.0)
+        self._draw_label("BACK TO GAME", self.btn_close_guide.centerx, self.btn_close_guide.centery, GREEN, font_size=15)
 
     def render(self):
-        if self.state == "TITLE":
-            self._draw_title()
-            pygame.display.flip()
-            return
+        self.canvas.clear()
+        with self.canvas:
+            if self.state == "TITLE":
+                self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), BG_DARK)
+                self._draw_label("AEGIS PATH", SCREEN_WIDTH * 0.5, 340, CYAN, font_size=32)
+                self._draw_label("MERGE & ELIXIR DEFENSE", SCREEN_WIDTH * 0.5, 385, PURPLE, font_size=18)
+                self._draw_label("TAP ANYWHERE TO START", SCREEN_WIDTH * 0.5, 520, GREEN, font_size=18)
+                return
 
-        shake = self._shake_offset()
-        self._draw_lane_and_pads(shake)
+            shake = self._shake_offset()
+            self._draw_lane_and_pads(shake)
 
-        for pr in self.projectiles:
-            pr.draw(self.screen, shake)
-        for e in self.enemies:
-            e.draw(self.screen, self.font_sm, shake)
-        for sw in self.shockwaves:
-            sw.draw(self.screen, shake)
-        for p in self.particles:
-            p.draw(self.screen, shake)
-        for pop in self.popups:
-            pop.draw(self.screen, self.font_md, shake)
+            for pr in self.projectiles:
+                cx, cy = pr.x + shake[0], pr.y + shake[1]
+                self._draw_circle(cx, cy + 3.0, pr.radius * 0.8, SHADOW_COLOR)
+                self._draw_circle(cx, cy, pr.radius, pr.color)
+                self._draw_circle(cx, cy, max(2.0, pr.radius * 0.45), WHITE)
 
-        self._draw_top_hud()
-        self._draw_bottom_deck()
+            for e in self.enemies:
+                cx, cy = e.x + shake[0], e.y + shake[1]
+                self._draw_circle(cx, cy + 4.5, e.radius, SHADOW_COLOR)
+                col = WHITE if e.hit_flash > 0 else (ICE if e.slow_timer > 0 else e.color)
+                sides = 8 if e.kind == "boss" else (6 if e.kind == "brute" else (3 if e.kind == "swift" else 4))
+                self._draw_poly(cx, cy, e.radius, sides, e.spin, BLACK)
+                Color(*col)
+                Line(points=self._poly_outline_coords(cx, cy, e.radius, sides, e.spin), close=True, width=2.2)
+                self._draw_circle(cx, cy, max(3.0, e.radius * 0.35), col)
 
-        if self.drag_source is not None:
-            du = self._get_unit_at(self.drag_source)
-            if du is not None:
-                du.draw(
-                    self.screen,
-                    self.font_sm,
-                    (float(self.drag_pos[0]), float(self.drag_pos[1])),
-                    (0, 0),
-                    show_name=True,
-                )
+                bw = max(24.0, e.radius * 2.1)
+                bh = 5.0 if e.kind != "boss" else 7.0
+                bx = cx - bw * 0.5
+                by = cy - e.radius - 12.0
+                self._draw_rect(RectBox(bx, by, bw, bh), rgb(35, 40, 55))
+                ratio = clamp(e.hp / max(1.0, e.max_hp), 0.0, 1.0)
+                self._draw_rect(RectBox(bx, by, bw * ratio, bh), col)
+                if e.kind == "boss":
+                    self._draw_label("BOSS", cx, by - 10, PINK, font_size=11)
 
-        if self.state == "GUIDE":
-            self._draw_guide_modal()
-        elif self.state == "GAME_OVER":
-            self._draw_game_over()
+            for sw in self.shockwaves:
+                prog = 1.0 - clamp(sw.life / sw.max_life, 0.0, 1.0)
+                r = 6.0 + sw.max_radius * prog
+                alpha = (1.0 - prog) * 0.75
+                c = (sw.color[0], sw.color[1], sw.color[2], alpha)
+                self._draw_circle(sw.x + shake[0], sw.y + shake[1], r, (0, 0, 0, 0), outline=c, width=2.2)
 
-        pygame.display.flip()
+            for p in self.particles:
+                ratio = clamp(p.life / p.max_life, 0.0, 1.0)
+                c = (p.color[0] * ratio, p.color[1] * ratio, p.color[2] * ratio, ratio)
+                self._draw_circle(p.x + shake[0], p.y + shake[1], max(1.5, p.size * ratio), c)
 
-    def run(self):
-        running = True
-        while running:
-            dt = min(0.05, self.clock.tick(FPS) / 1000.0)
-            running = self.handle_events()
-            self.update(dt)
-            self.render()
-        pygame.quit()
+            for pop in self.popups:
+                alpha = clamp(pop.life / 0.75, 0.0, 1.0)
+                c = (pop.color[0], pop.color[1], pop.color[2], alpha)
+                self._draw_label(pop.text, pop.x + shake[0], pop.y + shake[1], c, font_size=14)
+
+            self._draw_top_hud()
+            self._draw_bottom_deck()
+
+            if self.drag_source is not None:
+                du = self._get_unit_at(self.drag_source)
+                if du is not None:
+                    self._draw_unit_art(du, self.drag_pos[0], self.drag_pos[1], show_name=True)
+
+            if self.state == "GUIDE":
+                self._draw_guide_modal()
+            elif self.state == "GAME_OVER":
+                self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), rgb(10, 8, 16, 0.84))
+                self._draw_label("BASE FALLEN", SCREEN_WIDTH * 0.5, 360, RED, font_size=30)
+                self._draw_label(f"SCORE: {self.score}   |   WAVE: {self.wave}", SCREEN_WIDTH * 0.5, 420, WHITE, font_size=17)
+                self._draw_label("TAP TO PLAY AGAIN", SCREEN_WIDTH * 0.5, 500, CYAN, font_size=16)
+
+    def step(self, dt: float):
+        self.update(min(0.05, dt))
+        self.render()
+
+
+class AegisPathApp(App):
+    def build(self):
+        self.title = TITLE
+        Window.clearcolor = BG_DARK
+        self.game_widget = AegisPathWidget()
+        return self.game_widget
+
+    def on_stop(self):
+        if hasattr(self, "game_widget"):
+            self.game_widget.audio.cleanup()
 
 
 if __name__ == "__main__":
-    AegisPathGame().run()
+    AegisPathApp().run()
