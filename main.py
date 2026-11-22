@@ -19,7 +19,7 @@ from kivy.clock import Clock
 from kivy.core.audio import SoundLoader
 from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, Line, Mesh, Rectangle
+from kivy.graphics import Color, Ellipse, Line, Mesh, PopMatrix, PushMatrix, Rectangle, Scale
 from kivy.uix.widget import Widget
 
 # ==============================================================================
@@ -596,8 +596,7 @@ class RectBox:
 class AegisPathWidget(Widget):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.size_hint = (None, None)
-        self.size = (SCREEN_WIDTH, SCREEN_HEIGHT)
+        self.size_hint = (1, 1)
 
         self.audio = AudioEngine()
         self.state = "TITLE"
@@ -667,7 +666,8 @@ class AegisPathWidget(Widget):
         self.spawn_queue.clear()
         runners = 5 + w * 2
         swifts = max(1, (w - 1) * 2)
-        brutes = max(0, (w - 1) * 2)
+        brutes = max(0, (w - 1)
+                     * 2)
         for _ in range(runners):
             self.spawn_queue.append("runner")
         for _ in range(swifts):
@@ -1202,77 +1202,85 @@ class AegisPathWidget(Widget):
         self._draw_rect(self.btn_close_guide, SLOT_BG, border=GREEN, width=2.0)
         self._draw_label("BACK TO GAME", self.btn_close_guide.centerx, self.btn_close_guide.centery, GREEN, font_size=15)
 
+    def _draw_scene(self):
+        if self.state == "TITLE":
+            self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), BG_DARK)
+            self._draw_label("AEGIS PATH", SCREEN_WIDTH * 0.5, 340, CYAN, font_size=32)
+            self._draw_label("MERGE & ELIXIR DEFENSE", SCREEN_WIDTH * 0.5, 385, PURPLE, font_size=18)
+            self._draw_label("TAP ANYWHERE TO START", SCREEN_WIDTH * 0.5, 520, GREEN, font_size=18)
+            return
+
+        shake = self._shake_offset()
+        self._draw_lane_and_pads(shake)
+
+        for pr in self.projectiles:
+            cx, cy = pr.x + shake[0], pr.y + shake[1]
+            self._draw_circle(cx, cy + 3.0, pr.radius * 0.8, SHADOW_COLOR)
+            self._draw_circle(cx, cy, pr.radius, pr.color)
+            self._draw_circle(cx, cy, max(2.0, pr.radius * 0.45), WHITE)
+
+        for e in self.enemies:
+            cx, cy = e.x + shake[0], e.y + shake[1]
+            self._draw_circle(cx, cy + 4.5, e.radius, SHADOW_COLOR)
+            col = WHITE if e.hit_flash > 0 else (ICE if e.slow_timer > 0 else e.color)
+            sides = 8 if e.kind == "boss" else (6 if e.kind == "brute" else (3 if e.kind == "swift" else 4))
+            self._draw_poly(cx, cy, e.radius, sides, e.spin, BLACK)
+            Color(*col)
+            Line(points=self._poly_outline_coords(cx, cy, e.radius, sides, e.spin), close=True, width=2.2)
+            self._draw_circle(cx, cy, max(3.0, e.radius * 0.35), col)
+
+            bw = max(24.0, e.radius * 2.1)
+            bh = 5.0 if e.kind != "boss" else 7.0
+            bx = cx - bw * 0.5
+            by = cy - e.radius - 12.0
+            self._draw_rect(RectBox(bx, by, bw, bh), rgb(35, 40, 55))
+            ratio = clamp(e.hp / max(1.0, e.max_hp), 0.0, 1.0)
+            self._draw_rect(RectBox(bx, by, bw * ratio, bh), col)
+            if e.kind == "boss":
+                self._draw_label("BOSS", cx, by - 10, PINK, font_size=11)
+
+        for sw in self.shockwaves:
+            prog = 1.0 - clamp(sw.life / sw.max_life, 0.0, 1.0)
+            r = 6.0 + sw.max_radius * prog
+            alpha = (1.0 - prog) * 0.75
+            c = (sw.color[0], sw.color[1], sw.color[2], alpha)
+            self._draw_circle(sw.x + shake[0], sw.y + shake[1], r, (0, 0, 0, 0), outline=c, width=2.2)
+
+        for p in self.particles:
+            ratio = clamp(p.life / p.max_life, 0.0, 1.0)
+            c = (p.color[0] * ratio, p.color[1] * ratio, p.color[2] * ratio, ratio)
+            self._draw_circle(p.x + shake[0], p.y + shake[1], max(1.5, p.size * ratio), c)
+
+        for pop in self.popups:
+            alpha = clamp(pop.life / 0.75, 0.0, 1.0)
+            c = (pop.color[0], pop.color[1], pop.color[2], alpha)
+            self._draw_label(pop.text, pop.x + shake[0], pop.y + shake[1], c, font_size=14)
+
+        self._draw_top_hud()
+        self._draw_bottom_deck()
+
+        if self.drag_source is not None:
+            du = self._get_unit_at(self.drag_source)
+            if du is not None:
+                self._draw_unit_art(du, self.drag_pos[0], self.drag_pos[1], show_name=True)
+
+        if self.state == "GUIDE":
+            self._draw_guide_modal()
+        elif self.state == "GAME_OVER":
+            self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), rgb(10, 8, 16, 0.84))
+            self._draw_label("BASE FALLEN", SCREEN_WIDTH * 0.5, 360, RED, font_size=30)
+            self._draw_label(f"SCORE: {self.score}   |   WAVE: {self.wave}", SCREEN_WIDTH * 0.5, 420, WHITE, font_size=17)
+            self._draw_label("TAP TO PLAY AGAIN", SCREEN_WIDTH * 0.5, 500, CYAN, font_size=16)
+
     def render(self):
+        sx = max(0.01, float(self.width)) / SCREEN_WIDTH
+        sy = max(0.01, float(self.height)) / SCREEN_HEIGHT
         self.canvas.clear()
         with self.canvas:
-            if self.state == "TITLE":
-                self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), BG_DARK)
-                self._draw_label("AEGIS PATH", SCREEN_WIDTH * 0.5, 340, CYAN, font_size=32)
-                self._draw_label("MERGE & ELIXIR DEFENSE", SCREEN_WIDTH * 0.5, 385, PURPLE, font_size=18)
-                self._draw_label("TAP ANYWHERE TO START", SCREEN_WIDTH * 0.5, 520, GREEN, font_size=18)
-                return
-
-            shake = self._shake_offset()
-            self._draw_lane_and_pads(shake)
-
-            for pr in self.projectiles:
-                cx, cy = pr.x + shake[0], pr.y + shake[1]
-                self._draw_circle(cx, cy + 3.0, pr.radius * 0.8, SHADOW_COLOR)
-                self._draw_circle(cx, cy, pr.radius, pr.color)
-                self._draw_circle(cx, cy, max(2.0, pr.radius * 0.45), WHITE)
-
-            for e in self.enemies:
-                cx, cy = e.x + shake[0], e.y + shake[1]
-                self._draw_circle(cx, cy + 4.5, e.radius, SHADOW_COLOR)
-                col = WHITE if e.hit_flash > 0 else (ICE if e.slow_timer > 0 else e.color)
-                sides = 8 if e.kind == "boss" else (6 if e.kind == "brute" else (3 if e.kind == "swift" else 4))
-                self._draw_poly(cx, cy, e.radius, sides, e.spin, BLACK)
-                Color(*col)
-                Line(points=self._poly_outline_coords(cx, cy, e.radius, sides, e.spin), close=True, width=2.2)
-                self._draw_circle(cx, cy, max(3.0, e.radius * 0.35), col)
-
-                bw = max(24.0, e.radius * 2.1)
-                bh = 5.0 if e.kind != "boss" else 7.0
-                bx = cx - bw * 0.5
-                by = cy - e.radius - 12.0
-                self._draw_rect(RectBox(bx, by, bw, bh), rgb(35, 40, 55))
-                ratio = clamp(e.hp / max(1.0, e.max_hp), 0.0, 1.0)
-                self._draw_rect(RectBox(bx, by, bw * ratio, bh), col)
-                if e.kind == "boss":
-                    self._draw_label("BOSS", cx, by - 10, PINK, font_size=11)
-
-            for sw in self.shockwaves:
-                prog = 1.0 - clamp(sw.life / sw.max_life, 0.0, 1.0)
-                r = 6.0 + sw.max_radius * prog
-                alpha = (1.0 - prog) * 0.75
-                c = (sw.color[0], sw.color[1], sw.color[2], alpha)
-                self._draw_circle(sw.x + shake[0], sw.y + shake[1], r, (0, 0, 0, 0), outline=c, width=2.2)
-
-            for p in self.particles:
-                ratio = clamp(p.life / p.max_life, 0.0, 1.0)
-                c = (p.color[0] * ratio, p.color[1] * ratio, p.color[2] * ratio, ratio)
-                self._draw_circle(p.x + shake[0], p.y + shake[1], max(1.5, p.size * ratio), c)
-
-            for pop in self.popups:
-                alpha = clamp(pop.life / 0.75, 0.0, 1.0)
-                c = (pop.color[0], pop.color[1], pop.color[2], alpha)
-                self._draw_label(pop.text, pop.x + shake[0], pop.y + shake[1], c, font_size=14)
-
-            self._draw_top_hud()
-            self._draw_bottom_deck()
-
-            if self.drag_source is not None:
-                du = self._get_unit_at(self.drag_source)
-                if du is not None:
-                    self._draw_unit_art(du, self.drag_pos[0], self.drag_pos[1], show_name=True)
-
-            if self.state == "GUIDE":
-                self._draw_guide_modal()
-            elif self.state == "GAME_OVER":
-                self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), rgb(10, 8, 16, 0.84))
-                self._draw_label("BASE FALLEN", SCREEN_WIDTH * 0.5, 360, RED, font_size=30)
-                self._draw_label(f"SCORE: {self.score}   |   WAVE: {self.wave}", SCREEN_WIDTH * 0.5, 420, WHITE, font_size=17)
-                self._draw_label("TAP TO PLAY AGAIN", SCREEN_WIDTH * 0.5, 500, CYAN, font_size=16)
+            PushMatrix()
+            Scale(sx, sy, 1)
+            self._draw_scene()
+            PopMatrix()
 
     def step(self, dt: float):
         self.update(min(0.05, dt))
