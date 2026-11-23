@@ -26,7 +26,7 @@ from kivy.graphics import Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle
 from kivy.uix.widget import Widget
 
 # ==============================================================================
-# 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS
+# 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS.
 # ==============================================================================
 
 SCREEN_WIDTH = 540
