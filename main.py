@@ -6,10 +6,12 @@ Touch/Mouse-only controls.
 
 import array
 import io
+import json
 import math
 import os
 import random
 import tempfile
+import traceback
 import wave
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -17,9 +19,10 @@ from typing import Dict, List, Optional, Tuple
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.audio import SoundLoader
+from kivy.core.image import Image as CoreImage
 from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
-from kivy.graphics import Color, Ellipse, Line, Mesh, PopMatrix, PushMatrix, Rectangle, Scale
+from kivy.graphics import Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle, Rotate, Scale, Translate
 from kivy.uix.widget import Widget
 
 # ==============================================================================
@@ -43,11 +46,7 @@ def rgb(r: int, g: int, b: int, a: float = 1.0) -> Tuple[float, float, float, fl
 
 BG_DARK = rgb(9, 12, 20)
 BG_TILE_ALT = rgb(13, 17, 28)
-BG_DECOR = rgb(24, 33, 52)
 BG_LANE = rgb(24, 30, 46)
-BG_LANE_INNER = rgb(19, 24, 37)
-LANE_CURB_DARK = rgb(34, 44, 66)
-LANE_CURB_LIGHT = rgb(76, 102, 146)
 LANE_CENTER = rgb(62, 92, 136)
 LANE_BORDER = rgb(52, 68, 98)
 SHADOW_COLOR = rgb(4, 6, 10, 0.52)
@@ -173,7 +172,101 @@ DOCK_SLOTS_COUNT = 6
 
 
 # ==============================================================================
-# 3. PROCEDURAL WAV AUDIO ENGINE VIA KIVY SOUNDLOADER
+# 3. TURRET, ENEMY & GUIDE SPRITE ASSETS LOADER + SAVE DATA
+# ==============================================================================
+
+TURRET_FILE_PREFIX: Dict[str, str] = {
+    "sniper": "sniper",
+    "gatling": "machine_gun",
+    "mortar": "cannon",
+}
+
+ENEMY_FILE_NAMES: Dict[str, str] = {
+    "swift": "enemy_1_small_triangle.png",
+    "runner": "enemy_2_diamond.png",
+    "brute": "enemy_3_round_drone.png",
+    "spiked": "enemy_4_spiked_drone.png",
+    "boss": "enemy_5_boss.png",
+}
+
+
+def resolve_base_dir() -> str:
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def resolve_assets_dir() -> str:
+    return os.path.join(resolve_base_dir(), "assets")
+
+
+def resolve_save_path() -> str:
+    return os.path.join(resolve_base_dir(), "aegis_save.json")
+
+
+def load_best_stats() -> Tuple[int, int]:
+    path = resolve_save_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return int(data.get("best_score", 0)), int(data.get("best_wave", 1))
+        except Exception:
+            pass
+    return 0, 1
+
+
+def save_best_stats(best_score: int, best_wave: int):
+    path = resolve_save_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"best_score": int(best_score), "best_wave": int(best_wave)}, f)
+    except Exception:
+        pass
+
+
+def load_turret_textures() -> Dict[Tuple[str, int], object]:
+    textures: Dict[Tuple[str, int], object] = {}
+    assets_dir = resolve_assets_dir()
+    for unit_type, suffix in TURRET_FILE_PREFIX.items():
+        for tier in range(1, 6):
+            path = os.path.join(assets_dir, f"T{tier}_{suffix}.png")
+            if os.path.exists(path):
+                try:
+                    img = CoreImage(path)
+                    if img.texture is not None:
+                        textures[(unit_type, tier)] = img.texture
+                except Exception as exc:
+                    print(f"[ASSET ERROR] {path}: {exc}")
+    return textures
+
+
+def load_enemy_textures() -> Dict[str, object]:
+    textures: Dict[str, object] = {}
+    assets_dir = resolve_assets_dir()
+    for enemy_kind, filename in ENEMY_FILE_NAMES.items():
+        path = os.path.join(assets_dir, filename)
+        if os.path.exists(path):
+            try:
+                img = CoreImage(path)
+                if img.texture is not None:
+                    textures[enemy_kind] = img.texture
+            except Exception as exc:
+                print(f"[ASSET ERROR] {path}: {exc}")
+    return textures
+
+
+def load_info_texture() -> Optional[object]:
+    info_path = os.path.join(resolve_assets_dir(), "info.png")
+    if os.path.exists(info_path):
+        try:
+            img = CoreImage(info_path)
+            return img.texture
+        except Exception as exc:
+            print(f"[ASSET ERROR] {info_path}: {exc}")
+    return None
+
+
+# ==============================================================================
+# 4. PROCEDURAL WAV AUDIO ENGINE VIA KIVY SOUNDLOADER
 # ==============================================================================
 
 class AudioEngine:
@@ -257,7 +350,7 @@ class AudioEngine:
 
 
 # ==============================================================================
-# 4. VISUAL FX: PARTICLES, SHOCKWAVES & FLOATING LABELS
+# 5. VISUAL FX: PARTICLES, SHOCKWAVES & FLOATING LABELS
 # ==============================================================================
 
 @dataclass
@@ -310,7 +403,7 @@ class FloatingPopup:
 
 
 # ==============================================================================
-# 5. LANE ENEMIES & PROJECTILES
+# 6. LANE ENEMIES & PROJECTILES
 # ==============================================================================
 
 @dataclass
@@ -338,6 +431,7 @@ class LaneEnemy:
             "runner": (88.0, 58.0, 13.0, RED, 1, 0.06, 25),
             "swift": (62.0, 86.0, 11.0, ORANGE, 1, 0.08, 35),
             "brute": (235.0, 39.0, 18.0, PURPLE, 2, 0.15, 70),
+            "spiked": (310.0, 48.0, 19.0, CYAN, 2, 0.18, 90),
             "boss": (1100.0, 30.0, 25.0, PINK, 6, 0.45, 300),
         }
         hp, spd, rad, col, bdmg, rew, scr = specs[kind]
@@ -355,7 +449,7 @@ class LaneEnemy:
 
     def update(self, dt: float) -> bool:
         self.hit_flash = max(0.0, self.hit_flash - dt)
-        self.spin += dt * (4.5 if self.kind == "swift" else 1.8)
+        self.spin += dt * (4.5 if self.kind in ("swift", "spiked") else 1.8)
 
         mult = 1.0
         if self.slow_timer > 0:
@@ -407,7 +501,7 @@ class LaneProjectile:
 
 
 # ==============================================================================
-# 6. DEFENSIVE UNITS & MERGE PROGRESSION
+# 7. DEFENSIVE UNITS & MERGE PROGRESSION
 # ==============================================================================
 
 UNIT_META: Dict[str, Dict[str, object]] = {
@@ -464,6 +558,10 @@ class DefenseUnit:
             4: PINK,
         }
         return tier_cols.get(self.tier, YELLOW)  # type: ignore
+
+    def get_refund_elixir(self) -> float:
+        base_cost = int(UNIT_META[self.unit_type]["cost"])
+        return float(max(1, (base_cost * self.tier) // 2))
 
     def get_damage(self, type_bonus_mult: float) -> float:
         base = float(UNIT_META[self.unit_type]["base_dmg"])
@@ -563,7 +661,7 @@ class DefenseUnit:
 
 
 # ==============================================================================
-# 7. KIVY CANVAS WIDGET & GAME ENGINE
+# 8. KIVY CANVAS WIDGET & GAME ENGINE
 # ==============================================================================
 
 @dataclass
@@ -598,11 +696,20 @@ class AegisPathWidget(Widget):
         super().__init__(**kwargs)
         self.size_hint = (1, 1)
 
-        self.audio = AudioEngine()
-        self.state = "TITLE"
+        self._text_cache: Dict[Tuple[str, int], Tuple[object, int, int]] = {}
+        self.best_score, self.best_wave = load_best_stats()
 
-        self.btn_guide = RectBox(SCREEN_WIDTH - 96, 12, 82, 24)
-        self.btn_close_guide = RectBox(SCREEN_WIDTH // 2 - 90, SCREEN_HEIGHT - 115, 180, 48)
+        self.audio = AudioEngine()
+        self.turret_textures: Dict[Tuple[str, int], object] = load_turret_textures()
+        self.enemy_textures: Dict[str, object] = load_enemy_textures()
+        self.info_texture: Optional[object] = load_info_texture()
+        self.state = "TITLE"
+        self._state_before_guide = "TITLE"
+
+        self.btn_guide = RectBox(SCREEN_WIDTH - 92, 10, 78, 24)
+        self.btn_pause = RectBox(SCREEN_WIDTH - 92, 40, 78, 24)
+        self.btn_close_guide = RectBox(SCREEN_WIDTH // 2 - 90, SCREEN_HEIGHT - 86, 180, 48)
+        self.btn_sell = RectBox(SCREEN_WIDTH // 2 - 96, DECK_TOP - 36, 192, 30)
 
         self.dock_rects: List[RectBox] = []
         slot_w, slot_h = 74, 78
@@ -612,21 +719,34 @@ class AegisPathWidget(Widget):
         for i in range(DOCK_SLOTS_COUNT):
             self.dock_rects.append(RectBox(start_x + i * (slot_w + gap), DECK_TOP + 10, slot_w, slot_h))
 
-        btn_y = DECK_TOP + 98
+        sbtn_y = DECK_TOP + 98
         btn_w, btn_h = 162, 58
         self.spawn_btns: List[Tuple[str, RectBox]] = [
-            ("sniper", RectBox(16, btn_y, btn_w, btn_h)),
-            ("gatling", RectBox(189, btn_y, btn_w, btn_h)),
-            ("mortar", RectBox(362, btn_y, btn_w, btn_h)),
+            ("sniper", RectBox(16, sbtn_y, btn_w, btn_h)),
+            ("gatling", RectBox(189, sbtn_y, btn_w, btn_h)),
+            ("mortar", RectBox(362, sbtn_y, btn_w, btn_h)),
         ]
 
         up_y = DECK_TOP + 168
-        self.btn_up_sniper = RectBox(16, up_y, 162, 46)
-        self.btn_up_gatling = RectBox(189, up_y, 162, 46)
-        self.btn_nova = RectBox(362, up_y, 162, 46)
+        self.btn_up_sniper = RectBox(16, up_y, btn_w, 46)
+        self.btn_up_gatling = RectBox(189, up_y, btn_w, 46)
+        self.btn_nova = RectBox(362, up_y, btn_w, 46)
+
+        self._active_touch_uid: Optional[int] = None
 
         self.reset_game()
         Clock.schedule_interval(self.step, 1.0 / FPS)
+
+    def _sync_best_stats(self):
+        updated = False
+        if self.score > self.best_score:
+            self.best_score = self.score
+            updated = True
+        if self.wave > self.best_wave:
+            self.best_wave = self.wave
+            updated = True
+        if updated:
+            save_best_stats(self.best_score, self.best_wave)
 
     def reset_game(self):
         self.elixir = 2.0
@@ -648,6 +768,7 @@ class AegisPathWidget(Widget):
 
         self.drag_source: Optional[Tuple[str, int]] = None
         self.drag_pos: Tuple[float, float] = (0.0, 0.0)
+        self._active_touch_uid = None
 
         self.enemies: List[LaneEnemy] = []
         self.projectiles: List[LaneProjectile] = []
@@ -666,637 +787,948 @@ class AegisPathWidget(Widget):
         self.spawn_queue.clear()
         runners = 5 + w * 2
         swifts = max(1, (w - 1) * 2)
-        brutes = max(0, (w - 1)
-                     * 2)
-        for _ in range(runners):
-            self.spawn_queue.append("runner")
-        for _ in range(swifts):
-            self.spawn_queue.append("swift")
-        for _ in range(brutes):
-            self.spawn_queue.append("brute")
-        if w % 2 == 0:
-            self.spawn_queue.append("boss")
-        random.shuffle(self.spawn_queue)
+        brutes = max(0, (w - 1) * 2)
+        spiked = max(0, (w - 2) * 2)
+        has_boss = (w % 2 == 0) or (w >= 3)
 
-    def _add_shake(self, amt: float):
-        self.shake_mag = min(14.0, self.shake_mag + amt)
+        seq: List[str] = []
+        for i in range(max(runners, swifts, brutes, spiked)):
+            if i < runners:
+                seq.append("runner")
+            if i < swifts and i % 2 == 0:
+                seq.append("swift")
+            if i < brutes and i % 2 == 1:
+                seq.append("brute")
+            if i < spiked and i % 3 == 2:
+                seq.append("spiked")
+        if has_boss:
+            seq.append("boss")
+        self.spawn_queue = seq
+        self.spawn_timer = 0.7
 
-    def _spawn_burst(self, x: float, y: float, col: Tuple[float, float, float, float], count: int = 12):
+    def _get_type_bonus_mult(self, unit_type: str) -> float:
+        if unit_type == "sniper":
+            return 1.0 + (self.sniper_up_lvl - 1) * 0.22
+        if unit_type == "gatling":
+            return 1.0 + (self.gatling_up_lvl - 1) * 0.22
+        return 1.0
+
+    def _add_popup(self, x: float, y: float, text: str, color: Tuple[float, float, float, float]):
+        self.popups.append(FloatingPopup(x, y, text, color))
+
+    def _add_particles(
+        self,
+        x: float,
+        y: float,
+        color: Tuple[float, float, float, float],
+        count: int = 10,
+        spd: float = 120.0,
+    ):
         for _ in range(count):
-            a = random.uniform(0, math.pi * 2)
-            spd = random.uniform(45, 190)
-            life = random.uniform(0.2, 0.55)
-            self.particles.append(Particle(x, y, math.cos(a) * spd, math.sin(a) * spd, col, random.uniform(3, 6), life, life))
+            ang = random.uniform(0.0, math.tau)
+            v = random.uniform(spd * 0.25, spd)
+            life = random.uniform(0.22, 0.48)
+            self.particles.append(
+                Particle(
+                    x,
+                    y,
+                    math.cos(ang) * v,
+                    math.sin(ang) * v,
+                    color,
+                    random.uniform(2.5, 5.5),
+                    life,
+                    life,
+                )
+            )
 
-    def _spawn_unit_to_dock(self, utype: str) -> bool:
-        cost = int(UNIT_META[utype]["cost"])
-        if self.elixir < cost:
+    def _can_merge(self, a: Optional[DefenseUnit], b: Optional[DefenseUnit]) -> bool:
+        if a is None or b is None:
             return False
-        free_idx = next((i for i, u in enumerate(self.dock_units) if u is None), None)
-        if free_idx is None:
-            self.popups.append(FloatingPopup(SCREEN_WIDTH / 2, DECK_TOP - 15, "DOCK FULL!", RED))
-            return False
-        self.elixir -= cost
-        self.dock_units[free_idx] = DefenseUnit(utype, tier=1)
-        self.audio.play("spawn")
-        r = self.dock_rects[free_idx]
-        self._spawn_burst(r.centerx, r.centery, UNIT_META[utype]["color"], 10)  # type: ignore
-        return True
+        return a.unit_type == b.unit_type and a.tier == b.tier and a.tier < 5
 
-    def _get_unit_at(self, src: Tuple[str, int]) -> Optional[DefenseUnit]:
-        kind, idx = src
-        return self.pad_units[idx] if kind == "pad" else self.dock_units[idx]
-
-    def _set_unit_at(self, src: Tuple[str, int], unit: Optional[DefenseUnit]):
-        kind, idx = src
-        if kind == "pad":
-            self.pad_units[idx] = unit
-        else:
-            self.dock_units[idx] = unit
-
-    def _get_pos_of(self, src: Tuple[str, int]) -> Tuple[float, float]:
-        kind, idx = src
-        if kind == "pad":
-            return TOWER_PADS[idx]
-        r = self.dock_rects[idx]
-        return float(r.centerx), float(r.centery)
-
-    def _find_drop_target(self, mx: float, my: float) -> Optional[Tuple[str, int]]:
-        for i, pt in enumerate(TOWER_PADS):
-            if dist(mx, my, pt[0], pt[1]) <= 34.0:
-                return ("pad", i)
-        for i, rect in enumerate(self.dock_rects):
-            if rect.collidepoint(mx, my):
-                return ("dock", i)
+    def _get_unit_at(self, loc: Tuple[str, int]) -> Optional[DefenseUnit]:
+        kind, idx = loc
+        if kind == "pad" and 0 <= idx < len(self.pad_units):
+            return self.pad_units[idx]
+        if kind == "dock" and 0 <= idx < len(self.dock_units):
+            return self.dock_units[idx]
         return None
 
-    def _handle_drop(self, src: Tuple[str, int], dst: Optional[Tuple[str, int]]):
-        if dst is None or src == dst:
+    def _set_unit_at(self, loc: Tuple[str, int], unit: Optional[DefenseUnit]):
+        kind, idx = loc
+        if kind == "pad" and 0 <= idx < len(self.pad_units):
+            self.pad_units[idx] = unit
+        elif kind == "dock" and 0 <= idx < len(self.dock_units):
+            self.dock_units[idx] = unit
+
+    def _find_drop_target(self, lx: float, ly: float) -> Optional[Tuple[str, int]]:
+        for idx, (px, py) in enumerate(TOWER_PADS):
+            if dist(lx, ly, px, py) <= 36.0:
+                return ("pad", idx)
+        for idx, rect in enumerate(self.dock_rects):
+            if rect.collidepoint(lx, ly):
+                return ("dock", idx)
+        return None
+
+    def _handle_drop(self, src: Tuple[str, int], dst: Tuple[str, int]):
+        if src == dst:
             return
         u_src = self._get_unit_at(src)
         if u_src is None:
             return
         u_dst = self._get_unit_at(dst)
 
-        if u_dst is not None and u_dst.unit_type == u_src.unit_type and u_dst.tier == u_src.tier and u_dst.tier < 5:
-            u_dst.tier += 1
+        if self._can_merge(u_src, u_dst):
+            merged = DefenseUnit(u_src.unit_type, tier=u_src.tier + 1)
             self._set_unit_at(src, None)
+            self._set_unit_at(dst, merged)
             self.audio.play("merge")
-            px, py = self._get_pos_of(dst)
-            self.shockwaves.append(Shockwave(px, py, 48.0, u_dst.color))
-            self._spawn_burst(px, py, u_dst.color, 18)
-            self.popups.append(FloatingPopup(px, py - 22, f"MERGED T{u_dst.tier}!", u_dst.color))
-            self.score += 60 * u_dst.tier
+            self.nova_charge = min(1.0, self.nova_charge + 0.16)
+            self.score += 40 * merged.tier
+            self._sync_best_stats()
+            tx, ty = self._loc_center(dst)
+            self._add_particles(tx, ty, merged.color, count=16, spd=150.0)
+            self.shockwaves.append(Shockwave(tx, ty, 44.0, merged.color, 0.30, 0.30))
+            self._add_popup(tx, ty - 14, f"T{merged.tier} MERGE!", merged.color)
             return
 
         self._set_unit_at(src, u_dst)
         self._set_unit_at(dst, u_src)
-        self.audio.play("spawn")
 
-    def _trigger_frost_nova(self):
-        if self.nova_charge < 100.0:
+    def _sell_dragged_unit(self):
+        if self.drag_source is None:
+            return
+        unit = self._get_unit_at(self.drag_source)
+        if unit is None:
+            return
+        refund = unit.get_refund_elixir()
+        self._set_unit_at(self.drag_source, None)
+        self.elixir = min(MAX_ELIXIR, self.elixir + refund)
+        self.audio.play("spawn")
+        self._add_popup(
+            self.btn_sell.centerx,
+            self.btn_sell.y - 10,
+            f"+{refund:.0f} ELIXIR",
+            GREEN,
+        )
+
+    def _loc_center(self, loc: Tuple[str, int]) -> Tuple[float, float]:
+        kind, idx = loc
+        if kind == "pad":
+            return TOWER_PADS[idx]
+        r = self.dock_rects[idx]
+        return r.centerx, r.centery
+
+    def _spawn_unit(self, unit_type: str):
+        cost = int(UNIT_META[unit_type]["cost"])
+        if self.elixir < cost:
+            self._add_popup(SCREEN_WIDTH * 0.5, DECK_TOP - 18, "LOW ELIXIR", RED)
+            return
+        empty_dock = next((i for i, u in enumerate(self.dock_units) if u is None), None)
+        if empty_dock is None:
+            self._add_popup(SCREEN_WIDTH * 0.5, DECK_TOP - 18, "DOCK FULL", RED)
+            return
+        self.elixir -= cost
+        self.dock_units[empty_dock] = DefenseUnit(unit_type, tier=1)
+        self.audio.play("spawn")
+        r = self.dock_rects[empty_dock]
+        self._add_particles(r.centerx, r.centery, UNIT_META[unit_type]["color"], count=10, spd=95.0)  # type: ignore
+
+    def _trigger_nova(self):
+        if self.nova_charge < 1.0:
             return
         self.nova_charge = 0.0
         self.audio.play("nova")
-        self._add_shake(8.0)
-        bx, by = LANE_POINTS[-1]
-        self.shockwaves.append(Shockwave(bx, by, 420.0, ICE, 0.55, 0.55))
-        for e in self.enemies:
-            e.slow_timer = 3.5
-            e.hp -= 25.0
-            e.hit_flash = 0.12
-            self._spawn_burst(e.x, e.y, ICE, 8)
-        self.popups.append(FloatingPopup(SCREEN_WIDTH / 2, 290, "FROST NOVA!", ICE))
+        self.shake_mag = 9.0
+        cx, cy = SCREEN_WIDTH * 0.5, (ARENA_TOP + ARENA_BOTTOM) * 0.5
+        self.shockwaves.append(Shockwave(cx, cy, 320.0, CYAN, 0.55, 0.55))
+        self._add_popup(cx, cy, "AEGIS NOVA!", CYAN)
 
-    def _to_logical_xy(self, touch) -> Tuple[float, float]:
-        scale_x = SCREEN_WIDTH / max(1.0, float(self.width))
-        scale_y = SCREEN_HEIGHT / max(1.0, float(self.height))
-        lx = (touch.x - self.x) * scale_x
-        ly = SCREEN_HEIGHT - ((touch.y - self.y) * scale_y)
+        nova_dmg = 75.0 + self.wave * 22.0
+        for e in list(self.enemies):
+            if e.hp > 0:
+                e.hp -= nova_dmg
+                e.slow_timer = max(e.slow_timer, 2.2)
+                e.hit_flash = 0.14
+                self._add_particles(e.x, e.y, CYAN, count=8, spd=130.0)
+                if e.hp <= 0:
+                    self._on_enemy_killed(e)
+
+    def _on_enemy_killed(self, e: LaneEnemy):
+        if e in self.enemies:
+            self.enemies.remove(e)
+        self.kills += 1
+        self.score += e.score_reward
+        self._sync_best_stats()
+        self.elixir = min(MAX_ELIXIR, self.elixir + e.elixir_reward)
+        self.nova_charge = min(1.0, self.nova_charge + 0.05)
+        self._add_particles(e.x, e.y, e.color, count=12, spd=135.0)
+        self.audio.play("enemy_die")
+
+    # --------------------------------------------------------------------------
+    # TOUCH / MOUSE INPUT HANDLERS
+    # --------------------------------------------------------------------------
+
+    def _viewport_transform(self) -> Tuple[float, float, float]:
+        w = max(1.0, float(self.width))
+        h = max(1.0, float(self.height))
+        scale = min(w / SCREEN_WIDTH, h / SCREEN_HEIGHT)
+        off_x = (w - SCREEN_WIDTH * scale) * 0.5
+        off_y = (h - SCREEN_HEIGHT * scale) * 0.5
+        return scale, off_x, off_y
+
+    def _event_to_logical(self, x: float, y: float) -> Tuple[float, float]:
+        scale, off_x, off_y = self._viewport_transform()
+        lx = (x - off_x) / scale
+        ky = (y - off_y) / scale
+        ly = SCREEN_HEIGHT - ky
         return lx, ly
 
     def on_touch_down(self, touch):
-        mx, my = self._to_logical_xy(touch)
-        if self.state == "TITLE":
-            self.reset_game()
-            self.state = "PLAYING"
-            return True
+        lx, ly = self._event_to_logical(touch.x, touch.y)
 
-        if self.state == "GUIDE":
-            if self.btn_close_guide.collidepoint(mx, my):
+        if self.state == "TITLE":
+            if self.btn_guide.collidepoint(lx, ly):
+                self._state_before_guide = "TITLE"
+                self.state = "GUIDE"
+            else:
+                self.reset_game()
                 self.state = "PLAYING"
             return True
 
-        if self.state == "GAME_OVER":
+        if self.state == "GUIDE":
+            if self.btn_close_guide.collidepoint(lx, ly) or ly <= TOP_BAR_H:
+                self.state = self._state_before_guide
+            return True
+
+        if self.state == "PAUSED":
+            if self.btn_guide.collidepoint(lx, ly):
+                self._state_before_guide = "PAUSED"
+                self.state = "GUIDE"
+            elif self.btn_pause.collidepoint(lx, ly) or (ARENA_TOP <= ly <= ARENA_BOTTOM):
+                self.state = "PLAYING"
+            return True
+
+        if self.state == "GAMEOVER":
+            self._sync_best_stats()
             self.reset_game()
             self.state = "PLAYING"
             return True
 
-        if self.btn_guide.collidepoint(mx, my):
-            self.drag_source = None
+        if self.btn_guide.collidepoint(lx, ly):
+            self._state_before_guide = "PLAYING"
             self.state = "GUIDE"
             return True
 
+        if self.btn_pause.collidepoint(lx, ly):
+            self.state = "PAUSED"
+            return True
+
+        for idx, (px, py) in enumerate(TOWER_PADS):
+            if dist(lx, ly, px, py) <= 34.0 and self.pad_units[idx] is not None:
+                self.drag_source = ("pad", idx)
+                self.drag_pos = (lx, ly)
+                self._active_touch_uid = touch.uid
+                touch.grab(self)
+                return True
+
+        for idx, rect in enumerate(self.dock_rects):
+            if rect.collidepoint(lx, ly) and self.dock_units[idx] is not None:
+                self.drag_source = ("dock", idx)
+                self.drag_pos = (lx, ly)
+                self._active_touch_uid = touch.uid
+                touch.grab(self)
+                return True
+
         for utype, rect in self.spawn_btns:
-            if rect.collidepoint(mx, my):
-                self._spawn_unit_to_dock(utype)
+            if rect.collidepoint(lx, ly):
+                self._spawn_unit(utype)
                 return True
 
-        if self.btn_up_sniper.collidepoint(mx, my) and self.elixir >= self.sniper_up_cost:
-            self.elixir -= self.sniper_up_cost
-            self.sniper_up_lvl += 1
-            self.sniper_up_cost += 2
-            self.audio.play("merge")
-            self.popups.append(FloatingPopup(self.btn_up_sniper.centerx, self.btn_up_sniper.y - 10, f"SNIPER LV.{self.sniper_up_lvl}", CYAN))
+        if self.btn_up_sniper.collidepoint(lx, ly):
+            if self.elixir >= self.sniper_up_cost:
+                self.elixir -= self.sniper_up_cost
+                self.sniper_up_lvl += 1
+                self.sniper_up_cost += 2
+                self.audio.play("merge")
+                self._add_popup(
+                    self.btn_up_sniper.centerx,
+                    self.btn_up_sniper.y - 10,
+                    f"SNIPER LVL {self.sniper_up_lvl}",
+                    CYAN,
+                )
             return True
 
-        if self.btn_up_gatling.collidepoint(mx, my) and self.elixir >= self.gatling_up_cost:
-            self.elixir -= self.gatling_up_cost
-            self.gatling_up_lvl += 1
-            self.gatling_up_cost += 2
-            self.audio.play("merge")
-            self.popups.append(FloatingPopup(self.btn_up_gatling.centerx, self.btn_up_gatling.y - 10, f"GATLING LV.{self.gatling_up_lvl}", YELLOW))
+        if self.btn_up_gatling.collidepoint(lx, ly):
+            if self.elixir >= self.gatling_up_cost:
+                self.elixir -= self.gatling_up_cost
+                self.gatling_up_lvl += 1
+                self.gatling_up_cost += 2
+                self.audio.play("merge")
+                self._add_popup(
+                    self.btn_up_gatling.centerx,
+                    self.btn_up_gatling.y - 10,
+                    f"GATLING LVL {self.gatling_up_lvl}",
+                    YELLOW,
+                )
             return True
 
-        if self.btn_nova.collidepoint(mx, my) and self.nova_charge >= 100.0:
-            self._trigger_frost_nova()
+        if self.btn_nova.collidepoint(lx, ly):
+            if self.nova_charge >= 1.0:
+                self._trigger_nova()
             return True
 
-        for i, pt in enumerate(TOWER_PADS):
-            if self.pad_units[i] is not None and dist(mx, my, pt[0], pt[1]) <= 28.0:
-                self.drag_source = ("pad", i)
-                self.drag_pos = (mx, my)
-                touch.grab(self)
-                return True
-
-        for i, rect in enumerate(self.dock_rects):
-            if self.dock_units[i] is not None and rect.collidepoint(mx, my):
-                self.drag_source = ("dock", i)
-                self.drag_pos = (mx, my)
-                touch.grab(self)
-                return True
-
-        return super().on_touch_down(touch)
+        return False
 
     def on_touch_move(self, touch):
-        if touch.grab_current == self and self.drag_source is not None:
-            self.drag_pos = self._to_logical_xy(touch)
+        if self._active_touch_uid == touch.uid and self.drag_source is not None:
+            lx, ly = self._event_to_logical(touch.x, touch.y)
+            self.drag_pos = (lx, ly)
             return True
-        return super().on_touch_move(touch)
+        return False
 
     def on_touch_up(self, touch):
-        if touch.grab_current == self:
-            touch.ungrab(self)
+        if self._active_touch_uid == touch.uid:
+            if touch.grab_current is self:
+                try:
+                    touch.ungrab(self)
+                except Exception:
+                    pass
             if self.drag_source is not None:
-                mx, my = self._to_logical_xy(touch)
-                dst = self._find_drop_target(mx, my)
-                self._handle_drop(self.drag_source, dst)
-                self.drag_source = None
+                lx, ly = self._event_to_logical(touch.x, touch.y)
+                if self.btn_sell.collidepoint(lx, ly):
+                    self._sell_dragged_unit()
+                else:
+                    dst = self._find_drop_target(lx, ly)
+                    if dst is not None:
+                        self._handle_drop(self.drag_source, dst)
+            self.drag_source = None
+            self._active_touch_uid = None
             return True
-        return super().on_touch_up(touch)
+        return False
 
-    def update(self, dt: float):
-        self.shake_mag = max(0.0, self.shake_mag - dt * 35.0)
+    # --------------------------------------------------------------------------
+    # SIMULATION STEP
+    # --------------------------------------------------------------------------
+
+    def step(self, dt: float):
+        try:
+            dt = min(dt, 0.05)
+            if self.state == "PLAYING":
+                self._update_playing(dt)
+                self._update_fx(dt)
+            elif self.state == "GAMEOVER":
+                self._update_fx(dt)
+            self._redraw()
+        except Exception as exc:
+            traceback.print_exc()
+            print(f"[STEP CRASH] {exc}")
+
+    def _update_fx(self, dt: float):
+        self.shake_mag = max(0.0, self.shake_mag - dt * 28.0)
         self.particles = [p for p in self.particles if p.update(dt)]
         self.shockwaves = [s for s in self.shockwaves if s.update(dt)]
         self.popups = [p for p in self.popups if p.update(dt)]
 
-        if self.state != "PLAYING":
-            return
-
-        self.elixir = clamp(self.elixir + ELIXIR_REGEN_PER_SEC * dt, 0.0, MAX_ELIXIR)
+    def _update_playing(self, dt: float):
+        self.elixir = min(MAX_ELIXIR, self.elixir + ELIXIR_REGEN_PER_SEC * dt)
 
         if self.spawn_queue:
             self.spawn_timer -= dt
             if self.spawn_timer <= 0.0:
                 kind = self.spawn_queue.pop(0)
                 self.enemies.append(LaneEnemy.create(kind, self.wave))
-                self.spawn_timer = max(0.50, 1.05 - self.wave * 0.035)
+                self.spawn_timer = 0.55 if kind == "swift" else 0.92
         elif not self.enemies:
             self.wave += 1
-            self.elixir = clamp(self.elixir + 0.5, 0.0, MAX_ELIXIR)
-            self.popups.append(FloatingPopup(SCREEN_WIDTH / 2, 250, f"WAVE {self.wave}", YELLOW))
+            self._sync_best_stats()
+            self.elixir = min(MAX_ELIXIR, self.elixir + 2.5)
+            self._add_popup(SCREEN_WIDTH * 0.5, 250, f"WAVE {self.wave}", GREEN)
             self._queue_wave(self.wave)
 
-        alive_enemies: List[LaneEnemy] = []
-        for e in self.enemies:
-            if e.update(dt):
+        for e in list(self.enemies):
+            reached_end = e.update(dt)
+            if reached_end:
+                if e in self.enemies:
+                    self.enemies.remove(e)
                 self.base_hp = max(0, self.base_hp - e.base_dmg)
+                self.shake_mag = 7.0
                 self.audio.play("base_hit")
-                self._add_shake(9.0)
-                self._spawn_burst(e.x, e.y, RED, 16)
-                self.popups.append(FloatingPopup(e.x, e.y - 16, f"-{e.base_dmg} BASE", RED))
+                self._add_particles(e.x, e.y, RED, count=12, spd=120.0)
                 if self.base_hp <= 0:
-                    self.state = "GAME_OVER"
-            else:
-                alive_enemies.append(e)
-        self.enemies = alive_enemies
+                    self._sync_best_stats()
+                    self.state = "GAMEOVER"
+                    return
 
-        sniper_mult = 1.0 + (self.sniper_up_lvl - 1) * 0.22
-        gatling_mult = 1.0 + (self.gatling_up_lvl - 1) * 0.22
         for idx, unit in enumerate(self.pad_units):
             if unit is not None:
-                mult = sniper_mult if unit.unit_type == "sniper" else (gatling_mult if unit.unit_type == "gatling" else 1.0)
-                unit.update_and_fire(dt, TOWER_PADS[idx], self.enemies, self.projectiles, self.audio, mult)
+                mult = self._get_type_bonus_mult(unit.unit_type)
+                unit.update_and_fire(
+                    dt,
+                    TOWER_PADS[idx],
+                    self.enemies,
+                    self.projectiles,
+                    self.audio,
+                    mult,
+                )
 
-        active_projs: List[LaneProjectile] = []
-        for pr in self.projectiles:
-            if not pr.update(dt):
+        for proj in list(self.projectiles):
+            if not proj.update(dt):
+                if proj in self.projectiles:
+                    self.projectiles.remove(proj)
                 continue
-            hit = False
+
+            hit_enemy: Optional[LaneEnemy] = None
             for e in self.enemies:
-                if e.hp > 0 and dist(pr.x, pr.y, e.x, e.y) <= pr.radius + e.radius:
-                    hit = True
-                    if pr.splash_radius > 0:
-                        self.shockwaves.append(Shockwave(pr.x, pr.y, pr.splash_radius, pr.color, 0.22, 0.22))
-                        for other in self.enemies:
-                            if other.hp > 0 and dist(pr.x, pr.y, other.x, other.y) <= pr.splash_radius + other.radius:
-                                other.hp -= pr.damage
-                                other.hit_flash = 0.08
-                                if pr.slow_duration > 0:
-                                    other.slow_timer = max(other.slow_timer, pr.slow_duration)
-                    else:
-                        e.hp -= pr.damage
-                        e.hit_flash = 0.07
-                        if pr.slow_duration > 0:
-                            e.slow_timer = max(e.slow_timer, pr.slow_duration)
-                    self.audio.play("enemy_hit")
-                    self._spawn_burst(pr.x, pr.y, pr.color, 5)
+                if e.hp > 0 and dist(proj.x, proj.y, e.x, e.y) <= proj.radius + e.radius:
+                    hit_enemy = e
                     break
-            if not hit:
-                active_projs.append(pr)
-        self.projectiles = active_projs
 
-        surviving: List[LaneEnemy] = []
-        for e in self.enemies:
-            if e.hp <= 0:
-                self.audio.play("enemy_die")
-                self.kills += 1
-                self.score += e.score_reward
-                self.elixir = clamp(self.elixir + e.elixir_reward, 0.0, MAX_ELIXIR)
-                self.nova_charge = clamp(self.nova_charge + (15.0 if e.kind == "boss" else 5.0), 0.0, 100.0)
-                self._spawn_burst(e.x, e.y, e.color, 14 if e.kind != "boss" else 34)
-                self.popups.append(FloatingPopup(e.x, e.y - 12, f"+{e.elixir_reward:.2f}", PURPLE))
-            else:
-                surviving.append(e)
-        self.enemies = surviving
+            if hit_enemy is not None:
+                if proj.splash_radius > 0.0:
+                    self.shockwaves.append(
+                        Shockwave(proj.x, proj.y, proj.splash_radius, proj.color, 0.24, 0.24)
+                    )
+                    self._add_particles(proj.x, proj.y, proj.color, count=12, spd=130.0)
+                    for e in list(self.enemies):
+                        if e.hp > 0 and dist(proj.x, proj.y, e.x, e.y) <= proj.splash_radius + e.radius:
+                            e.hp -= proj.damage
+                            e.hit_flash = 0.09
+                            if proj.slow_duration > 0:
+                                e.slow_timer = max(e.slow_timer, proj.slow_duration)
+                            if e.hp <= 0:
+                                self._on_enemy_killed(e)
+                else:
+                    hit_enemy.hp -= proj.damage
+                    hit_enemy.hit_flash = hit_enemy.hit_flash = 0.09
+                    self.audio.play("enemy_hit")
+                    self._add_particles(proj.x, proj.y, proj.color, count=5, spd=85.0)
+                    if hit_enemy.hp <= 0:
+                        self._on_enemy_killed(hit_enemy)
 
-    def _shake_offset(self) -> Tuple[float, float]:
-        if self.shake_mag <= 0.2:
-            return 0.0, 0.0
-        return random.uniform(-self.shake_mag, self.shake_mag), random.uniform(-self.shake_mag, self.shake_mag)
+                if proj in self.projectiles:
+                    self.projectiles.remove(proj)
 
-    def _poly_outline_coords(self, cx: float, cy: float, radius: float, sides: int, angle: float) -> List[float]:
-        coords: List[float] = []
-        for i in range(sides):
-            a = angle + (2.0 * math.pi * i) / sides
-            px = cx + math.cos(a) * radius
-            py = to_ky(cy + math.sin(a) * radius)
-            coords.extend([px, py])
-        return coords
+    # --------------------------------------------------------------------------
+    # KIVY CANVAS DRAWING HELPERS (WITH TEXT CACHE)
+    # --------------------------------------------------------------------------
 
-    def _draw_poly(
+    def _get_cached_text_texture(self, text: str, size: int) -> Tuple[object, int, int]:
+        key = (text, size)
+        cached = self._text_cache.get(key)
+        if cached is not None:
+            return cached
+        lbl = CoreLabel(text=text, font_size=size, bold=True)
+        lbl.refresh()
+        tex = lbl.texture
+        tw, th = tex.size
+        if len(self._text_cache) > 256:
+            self._text_cache.clear()
+        self._text_cache[key] = (tex, tw, th)
+        return tex, tw, th
+
+    def _draw_text(
         self,
-        cx: float,
-        cy: float,
-        radius: float,
-        sides: int,
-        angle: float,
-        color: Tuple[float, float, float, float],
+        text: str,
+        x: float,
+        y: float,
+        size: int = 16,
+        color=WHITE,
+        center: bool = False,
     ):
-        verts: List[float] = []
-        indices: List[int] = []
-        for i in range(sides):
-            a = angle + (2.0 * math.pi * i) / sides
-            px = cx + math.cos(a) * radius
-            py = to_ky(cy + math.sin(a) * radius)
-            verts.extend([px, py, 0.0, 0.0])
-            indices.append(i)
+        tex, tw, th = self._get_cached_text_texture(text, size)
+        dx = x - tw * 0.5 if center else x
+        ky = to_ky(y + th)
         Color(*color)
-        Mesh(vertices=verts, indices=indices, mode="triangle_fan")
+        Rectangle(texture=tex, pos=(dx, ky), size=(tw, th))
+
+    def _draw_rect(
+        self,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        color,
+        line_width: float = 0.0,
+    ):
+        ky = to_ky(y + h)
+        if line_width > 0:
+            Color(*color)
+            Line(rectangle=(x, ky, w, h), width=line_width)
+        else:
+            Color(*color)
+            Rectangle(pos=(x, ky), size=(w, h))
 
     def _draw_circle(
         self,
         cx: float,
         cy: float,
-        radius: float,
-        color: Tuple[float, float, float, float],
-        outline: Optional[Tuple[float, float, float, float]] = None,
-        width: float = 2.0,
+        r: float,
+        color,
+        line_width: float = 0.0,
     ):
         ky = to_ky(cy)
+        if line_width > 0:
+            Color(*color)
+            Line(circle=(cx, ky, r), width=line_width)
+        else:
+            Color(*color)
+            Ellipse(pos=(cx - r, ky - r), size=(r * 2.0, r * 2.0))
+
+    def _draw_poly_points(self, pts_topdown: List[Tuple[float, float]], color, line_width: float = 2.0):
+        flat: List[float] = []
+        for px, py in pts_topdown:
+            flat.extend([px, to_ky(py)])
         Color(*color)
-        Ellipse(pos=(cx - radius, ky - radius), size=(radius * 2.0, radius * 2.0))
-        if outline is not None:
-            Color(*outline)
-            Line(circle=(cx, ky, radius), width=width)
+        Line(points=flat, width=line_width, close=True)
 
-    def _draw_rect(
-        self,
-        box: RectBox,
-        fill: Tuple[float, float, float, float],
-        border: Optional[Tuple[float, float, float, float]] = None,
-        width: float = 2.0,
-    ):
-        ky_bottom = to_ky(box.bottom)
-        Color(*fill)
-        Rectangle(pos=(box.x, ky_bottom), size=(box.w, box.h))
-        if border is not None:
-            Color(*border)
-            Line(rectangle=(box.x, ky_bottom, box.w, box.h), width=width)
+    def _draw_enemy_shape(self, e: LaneEnemy):
+        r = e.radius
+        ky = to_ky(e.y)
+        tex = self.enemy_textures.get(e.kind)
 
-    def _draw_label(
+        if tex is not None:
+            sprite_size = r * 2.5
+            deg = -math.degrees(e.spin) if e.kind in ("swift", "spiked") else 0.0
+            PushMatrix()
+            Rotate(angle=deg, origin=(e.x, ky))
+            if e.hit_flash > 0:
+                Color(1.0, 0.45, 0.45, 1.0)
+            else:
+                Color(1.0, 1.0, 1.0, 1.0)
+            Rectangle(
+                texture=tex,
+                pos=(e.x - sprite_size * 0.5, ky - sprite_size * 0.5),
+                size=(sprite_size, sprite_size),
+            )
+            PopMatrix()
+        else:
+            col = WHITE if e.hit_flash > 0 else e.color
+            if e.kind == "runner":
+                pts = [(e.x, e.y - r), (e.x + r, e.y), (e.x, e.y + r), (e.x - r, e.y)]
+                self._draw_circle(e.x, e.y, r * 0.72, col)
+                self._draw_poly_points(pts, col, line_width=2.0)
+            elif e.kind == "swift":
+                pts = [
+                    (e.x + math.cos(e.spin) * r, e.y + math.sin(e.spin) * r),
+                    (e.x + math.cos(e.spin + 2.4) * r, e.y + math.sin(e.spin + 2.4) * r),
+                    (e.x + math.cos(e.spin - 2.4) * r, e.y + math.sin(e.spin - 2.4) * r),
+                ]
+                self._draw_poly_points(pts, col, line_width=2.5)
+                self._draw_circle(e.x, e.y, r * 0.42, WHITE)
+            elif e.kind == "brute":
+                pts = []
+                for k in range(6):
+                    a = e.spin * 0.35 + k * (math.tau / 6.0)
+                    pts.append((e.x + math.cos(a) * r, e.y + math.sin(a) * r))
+                self._draw_circle(e.x, e.y, r * 0.65, PANEL_BG)
+                self._draw_poly_points(pts, col, line_width=2.5)
+                self._draw_circle(e.x, e.y, r * 0.32, col)
+            else:
+                pts = []
+                for k in range(8):
+                    a = e.spin * 0.25 + k * (math.tau / 8.0)
+                    pts.append((e.x + math.cos(a) * r, e.y + math.sin(a) * r))
+                self._draw_circle(e.x, e.y, r * 0.78, PANEL_BG)
+                self._draw_poly_points(pts, col, line_width=3.0)
+                self._draw_circle(e.x, e.y, r * 0.45, YELLOW if e.hit_flash <= 0 else WHITE)
+
+        if e.slow_timer > 0:
+            self._draw_circle(e.x, e.y, r + 3.5, ICE, line_width=2.0)
+
+        hp_ratio = clamp(e.hp / max(1.0, e.max_hp), 0.0, 1.0)
+        bw = r * 2.1
+        self._draw_rect(e.x - r * 1.05, e.y - r - 9, bw, 4, BLACK)
+        self._draw_rect(
+            e.x - r * 1.05,
+            e.y - r - 9,
+            bw * hp_ratio,
+            4,
+            GREEN if hp_ratio > 0.4 else RED,
+        )
+
+    def _draw_unit_art(
         self,
-        text: str,
+        unit: DefenseUnit,
         cx: float,
         cy: float,
-        color: Tuple[float, float, float, float],
-        font_size: int = 13,
-        align_left: bool = False,
-        align_right: bool = False,
+        radius: float,
+        show_aim: bool = True,
     ):
-        lbl = CoreLabel(text=text, font_size=font_size, bold=True, color=color)
-        lbl.refresh()
-        tex = lbl.texture
-        if tex is None:
+        recoil_x = -math.cos(unit.aim_angle) * unit.recoil if show_aim else 0.0
+        recoil_y = -math.sin(unit.aim_angle) * unit.recoil if show_aim else 0.0
+        ux = cx + recoil_x
+        uy = cy + recoil_y
+        ky = to_ky(uy)
+
+        self._draw_circle(cx + 2, cy + 3, radius * 1.05, SHADOW_COLOR)
+        self._draw_circle(cx, cy, radius * 0.96, PANEL_BG)
+        self._draw_circle(cx, cy, radius * 0.96, unit.color, line_width=2.0)
+
+        tex = self.turret_textures.get((unit.unit_type, unit.tier))
+        if tex is not None:
+            sprite_size = radius * 2.25
+            deg = -math.degrees(unit.aim_angle) if show_aim else 0.0
+            PushMatrix()
+            Rotate(angle=deg, origin=(ux, ky))
+            Color(1.0, 1.0, 1.0, 1.0)
+            Rectangle(
+                texture=tex,
+                pos=(ux - sprite_size * 0.5, ky - sprite_size * 0.5),
+                size=(sprite_size, sprite_size),
+            )
+            PopMatrix()
+        else:
+            if show_aim:
+                bx = ux + math.cos(unit.aim_angle) * (radius + 9)
+                by = uy + math.sin(unit.aim_angle) * (radius + 9)
+                Color(*unit.color)
+                Line(points=[ux, ky, bx, to_ky(by)], width=3.5)
+
+        self._draw_text(
+            f"T{unit.tier}",
+            cx,
+            cy + radius + 3,
+            size=11,
+            color=unit.color,
+            center=True,
+        )
+
+    def _draw_drag_overlays(self):
+        if self.drag_source is None:
             return
-        w, h = tex.size
-        if align_left:
-            x = cx
-        elif align_right:
-            x = cx - w
-        else:
-            x = cx - w * 0.5
-        y = to_ky(cy) - h * 0.5
-        Color(1, 1, 1, 1)
-        Rectangle(texture=tex, pos=(x, y), size=(w, h))
+        dragged = self._get_unit_at(self.drag_source)
+        if dragged is None:
+            return
 
-    def _draw_unit_art(self, unit: DefenseUnit, cx: float, cy: float, show_name: bool = True):
-        rad = 15.0 + (unit.tier - 1) * 1.2
-        angle = unit.aim_angle
-        col = unit.color
+        rng = dragged.get_range()
+        dx, dy = self.drag_pos
 
-        self._draw_circle(cx, cy + 4.5, rad * 1.05, SHADOW_COLOR)
+        self._draw_circle(dx, dy, rng, (dragged.color[0], dragged.color[1], dragged.color[2], 0.10))
+        self._draw_circle(dx, dy, rng, (dragged.color[0], dragged.color[1], dragged.color[2], 0.65), line_width=1.6)
 
-        if unit.unit_type == "sniper":
-            sq_ang = angle + math.pi / 4.0
-            self._draw_poly(cx, cy, rad * 1.08, 4, sq_ang, BLACK)
-            Color(*col)
-            Line(points=self._poly_outline_coords(cx, cy, rad * 1.08, 4, sq_ang), close=True, width=2.2)
-            self._draw_poly(cx, cy, rad * 0.45, 4, angle, col)
-            bx = cx + math.cos(angle) * (rad + 10)
-            by = cy + math.sin(angle) * (rad + 10)
-            Color(*WHITE)
-            Line(points=[cx, to_ky(cy), bx, to_ky(by)], width=2.5)
-        elif unit.unit_type == "gatling":
-            self._draw_poly(cx, cy, rad * 1.16, 3, angle, BLACK)
-            Color(*col)
-            Line(points=self._poly_outline_coords(cx, cy, rad * 1.16, 3, angle), close=True, width=2.2)
-            self._draw_circle(cx, cy, 4.0, WHITE)
-            px = -math.sin(angle) * 4.5
-            py = math.cos(angle) * 4.5
-            Color(*WHITE)
-            for sign in (-1.0, 1.0):
-                sx, sy = cx + px * sign, cy + py * sign
-                ex, ey = sx + math.cos(angle) * (rad + 6), sy + math.sin(angle) * (rad + 6)
-                Line(points=[sx, to_ky(sy), ex, to_ky(ey)], width=1.6)
-        else:
-            self._draw_poly(cx, cy, rad * 1.10, 6, angle, BLACK)
-            Color(*col)
-            Line(points=self._poly_outline_coords(cx, cy, rad * 1.10, 6, angle), close=True, width=2.2)
-            Line(points=self._poly_outline_coords(cx, cy, rad * 0.62, 6, -angle * 0.5), close=True, width=1.6)
-            bx = cx + math.cos(angle) * (rad + 7)
-            by = cy + math.sin(angle) * (rad + 7)
-            Color(*WHITE)
-            Line(points=[cx, to_ky(cy), bx, to_ky(by)], width=3.5)
+        for idx, (px, py) in enumerate(TOWER_PADS):
+            if self.drag_source == ("pad", idx):
+                continue
+            target_u = self.pad_units[idx]
+            if self._can_merge(dragged, target_u):
+                self._draw_circle(px, py, 28, GREEN, line_width=2.5)
+                self._draw_circle(px, py, rng, (GREEN[0], GREEN[1], GREEN[2], 0.45), line_width=1.3)
+            elif target_u is None and dist(dx, dy, px, py) <= 44.0:
+                self._draw_circle(px, py, 26, CYAN, line_width=2.0)
+                self._draw_circle(px, py, rng, (CYAN[0], CYAN[1], CYAN[2], 0.40), line_width=1.3)
 
-        self._draw_label(f"T{unit.tier}", cx, cy, WHITE, font_size=11)
-        if show_name:
-            self._draw_label(str(UNIT_META[unit.unit_type]["name"]), cx, cy + rad + 12, col, font_size=11)
+        for idx, rect in enumerate(self.dock_rects):
+            if self.drag_source == ("dock", idx):
+                continue
+            if self._can_merge(dragged, self.dock_units[idx]):
+                self._draw_rect(rect.x - 2, rect.y - 2, rect.w + 4, rect.h + 4, GREEN, line_width=2.5)
 
-    def _draw_lane_and_pads(self, shake: Tuple[float, float]):
-        self._draw_rect(RectBox(0, ARENA_TOP, SCREEN_WIDTH, ARENA_BOTTOM - ARENA_TOP), BG_DARK)
-        tile = 54
-        for gx in range(0, SCREEN_WIDTH, tile):
-            for gy in range(ARENA_TOP, ARENA_BOTTOM, tile):
-                if ((gx // tile) + (gy // tile)) % 2 == 0:
-                    self._draw_rect(RectBox(gx + shake[0], gy + shake[1], tile, tile), BG_TILE_ALT)
-                self._draw_circle(gx + shake[0], gy + shake[1], 2.0, BG_DECOR)
+        refund = dragged.get_refund_elixir()
+        self._draw_rect(self.btn_sell.x, self.btn_sell.y, self.btn_sell.w, self.btn_sell.h, SLOT_BG)
+        self._draw_rect(self.btn_sell.x, self.btn_sell.y, self.btn_sell.w, self.btn_sell.h, RED, line_width=2.0)
+        self._draw_text(
+            f"SELL +{refund:.0f} ELIXIR",
+            self.btn_sell.centerx,
+            self.btn_sell.y + 7,
+            size=13,
+            color=RED,
+            center=True,
+        )
 
-        pts_ky: List[float] = []
-        shadow_ky: List[float] = []
-        for p in LANE_POINTS:
-            px, py = p[0] + shake[0], p[1] + shake[1]
-            pts_ky.extend([px, to_ky(py)])
-            shadow_ky.extend([px, to_ky(py + 7)])
+        self._draw_unit_art(dragged, dx, dy, 22.0, show_aim=False)
 
-        Color(*SHADOW_COLOR)
-        Line(points=shadow_ky, width=18)
-        Color(*LANE_CURB_DARK)
-        Line(points=pts_ky, width=17)
-        Color(*LANE_CURB_LIGHT)
-        Line(points=pts_ky, width=15)
-        Color(*BG_LANE)
-        Line(points=pts_ky, width=13)
-        Color(*BG_LANE_INNER)
-        Line(points=pts_ky, width=8)
-        Color(*LANE_CENTER)
-        Line(points=pts_ky, width=1.5)
+    # --------------------------------------------------------------------------
+    # MAIN RENDER LOOP
+    # --------------------------------------------------------------------------
 
-        sx, sy = LANE_POINTS[0][0] + shake[0], LANE_POINTS[0][1] + shake[1]
-        self._draw_circle(sx, sy, 18.0, SHADOW_COLOR)
-        self._draw_circle(sx, sy, 7.0, RED, outline=RED, width=2.0)
+    def _redraw(self):
+        self.canvas.clear()
+        scale, off_x, off_y = self._viewport_transform()
 
-        bx, by = LANE_POINTS[-1][0] + shake[0], LANE_POINTS[-1][1] + shake[1]
-        self._draw_circle(bx, by, 24.0, SHADOW_COLOR)
-        self._draw_poly(bx, by, 22.0, 6, 0.2, GREEN)
-        self._draw_circle(bx, by, 8.0, GREEN)
-        self._draw_label("BASE", bx, by + 34, GREEN, font_size=12)
+        sx = random.uniform(-self.shake_mag, self.shake_mag) if self.shake_mag > 0 else 0.0
+        sy = random.uniform(-self.shake_mag, self.shake_mag) if self.shake_mag > 0 else 0.0
 
-        for idx, pt in enumerate(TOWER_PADS):
-            px, py = pt[0] + shake[0], pt[1] + shake[1]
+        with self.canvas:
+            Color(*BG_DARK)
+            Rectangle(pos=(0, 0), size=(self.width, self.height))
+
+            PushMatrix()
+            Translate(off_x + sx * scale, off_y - sy * scale)
+            Scale(scale, scale, origin=(0, 0))
+
+            if self.state == "TITLE":
+                self._draw_title_screen()
+            elif self.state == "GUIDE":
+                self._draw_guide_screen()
+            else:
+                self._draw_arena()
+                self._draw_top_bar()
+                self._draw_bottom_deck()
+                self._draw_drag_overlays()
+                if self.state == "PAUSED":
+                    self._draw_pause_overlay()
+                elif self.state == "GAMEOVER":
+                    self._draw_gameover_overlay()
+
+            PopMatrix()
+
+    def _draw_arena(self):
+        self._draw_rect(0, ARENA_TOP, SCREEN_WIDTH, ARENA_BOTTOM - ARENA_TOP, BG_DARK)
+
+        for gx in range(0, SCREEN_WIDTH, 36):
+            for gy in range(ARENA_TOP, ARENA_BOTTOM, 36):
+                if ((gx // 36) + (gy // 36)) % 2 == 0:
+                    self._draw_rect(gx, gy, 36, 36, BG_TILE_ALT)
+
+        if len(LANE_POINTS) >= 2:
+            pts_kivy: List[float] = []
+            for px, py in LANE_POINTS:
+                pts_kivy.extend([px, to_ky(py)])
+
+            Color(*LANE_BORDER)
+            Line(points=pts_kivy, width=26, cap="round", joint="round")
+            Color(*BG_LANE)
+            Line(points=pts_kivy, width=21, cap="round", joint="round")
+            Color(*LANE_CENTER)
+            Line(points=pts_kivy, width=2, cap="round", joint="round")
+
+            sx, sy = LANE_POINTS[0]
+            ex, ey = LANE_POINTS[-1]
+            self._draw_circle(sx, sy, 14, RED, line_width=2.5)
+            self._draw_circle(ex, ey, 16, GREEN, line_width=2.5)
+
+        for idx, (px, py) in enumerate(TOWER_PADS):
             u = self.pad_units[idx]
-            pad_col = u.color if u is not None else SLOT_BORDER
-            self._draw_circle(px, py + 3.0, 21.0, LANE_CURB_DARK)
-            self._draw_circle(px, py, 21.0, SLOT_BG, outline=pad_col, width=2.0)
-            if u is not None:
-                ux = px - math.cos(u.aim_angle) * u.recoil
-                uy = py - math.sin(u.aim_angle) * u.recoil
-                self._draw_unit_art(u, ux, uy, show_name=True)
+            ring_col = u.color if u is not None else SLOT_BORDER
+            self._draw_circle(px, py, 24, SLOT_BG)
+            self._draw_circle(px, py, 24, ring_col, line_width=2.0)
+            if u is not None and self.drag_source != ("pad", idx):
+                self._draw_unit_art(u, px, py, 19.0, show_aim=True)
 
-    def _draw_top_hud(self):
-        self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, TOP_BAR_H), PANEL_BG)
-        Color(*LANE_BORDER)
-        Line(points=[0, to_ky(TOP_BAR_H), SCREEN_WIDTH, to_ky(TOP_BAR_H)], width=1.5)
+        for e in self.enemies:
+            self._draw_enemy_shape(e)
 
-        base_col = GREEN if self.base_hp > 6 else RED
-        self._draw_label(f"BASE: {self.base_hp}/{self.max_base_hp}", 16, 32, base_col, font_size=18, align_left=True)
-        self._draw_label(f"WAVE {self.wave}", SCREEN_WIDTH * 0.5 - 20, 36, CYAN, font_size=18)
-        self._draw_label(f"SCORE {self.score}", SCREEN_WIDTH - 16, 48, YELLOW, font_size=15, align_right=True)
+        for proj in self.projectiles:
+            self._draw_circle(proj.x, proj.y, proj.radius, proj.color)
 
-        self._draw_rect(self.btn_guide, SLOT_BG, border=CYAN, width=1.5)
-        self._draw_label("GUIDE", self.btn_guide.centerx, self.btn_guide.centery, CYAN, font_size=11)
+        for sw in self.shockwaves:
+            prog = 1.0 - (sw.life / max(0.01, sw.max_life))
+            r = max(4.0, sw.max_radius * prog)
+            alpha = clamp(1.0 - prog, 0.0, 1.0)
+            self._draw_circle(
+                sw.x,
+                sw.y,
+                r,
+                (sw.color[0], sw.color[1], sw.color[2], alpha),
+                line_width=2.5,
+            )
+
+        for p in self.particles:
+            alpha = clamp(p.life / max(0.01, p.max_life), 0.0, 1.0)
+            self._draw_circle(p.x, p.y, p.size, (p.color[0], p.color[1], p.color[2], alpha))
+
+        for pop in self.popups:
+            self._draw_text(pop.text, pop.x, pop.y, size=14, color=pop.color, center=True)
+
+    def _draw_top_bar(self):
+        self._draw_rect(0, 0, SCREEN_WIDTH, TOP_BAR_H, PANEL_BG)
+        self._draw_rect(0, TOP_BAR_H - 2, SCREEN_WIDTH, 2, SLOT_BORDER)
+        self._draw_text(f"WAVE {self.wave}", 14, 10, size=15, color=GREEN)
+        self._draw_text(
+            f"HP {self.base_hp}/{self.max_base_hp}",
+            14,
+            38,
+            size=14,
+            color=RED if self.base_hp <= 6 else WHITE,
+        )
+        self._draw_text(f"SCORE {self.score}", 138, 10, size=15, color=YELLOW)
+        self._draw_text(f"BEST {self.best_score} (W{self.best_wave})", 138, 38, size=12, color=CYAN)
+        self._draw_text(f"KILLS {self.kills}", 320, 12, size=13, color=GRAY)
+
+        self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, SLOT_BG)
+        self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, CYAN, line_width=1.5)
+        self._draw_text("GUIDE", self.btn_guide.centerx, self.btn_guide.y + 5, size=11, color=CYAN, center=True)
+
+        p_col = YELLOW if self.state == "PAUSED" else GREEN
+        p_lbl = "RESUME" if self.state == "PAUSED" else "PAUSE"
+        self._draw_rect(self.btn_pause.x, self.btn_pause.y, self.btn_pause.w, self.btn_pause.h, SLOT_BG)
+        self._draw_rect(self.btn_pause.x, self.btn_pause.y, self.btn_pause.w, self.btn_pause.h, p_col, line_width=1.5)
+        self._draw_text(p_lbl, self.btn_pause.centerx, self.btn_pause.y + 5, size=11, color=p_col, center=True)
 
     def _draw_bottom_deck(self):
-        self._draw_rect(RectBox(0, DECK_TOP, SCREEN_WIDTH, SCREEN_HEIGHT - DECK_TOP), PANEL_BG)
-        Color(*CYAN)
-        Line(points=[0, to_ky(DECK_TOP), SCREEN_WIDTH, to_ky(DECK_TOP)], width=2.0)
+        self._draw_rect(0, DECK_TOP, SCREEN_WIDTH, SCREEN_HEIGHT - DECK_TOP, PANEL_BG)
+        self._draw_rect(0, DECK_TOP, SCREEN_WIDTH, 2, SLOT_BORDER)
 
-        bar_x, bar_y, bar_w, bar_h = 16, DECK_TOP - 22, SCREEN_WIDTH - 32, 16
-        self._draw_rect(RectBox(bar_x, bar_y, bar_w, bar_h), rgb(20, 24, 36), border=WHITE, width=1.2)
-        fill_w = bar_w * clamp(self.elixir / MAX_ELIXIR, 0.0, 1.0)
-        if fill_w > 0:
-            self._draw_rect(RectBox(bar_x, bar_y, fill_w, bar_h), PURPLE)
-        self._draw_label(f"ELIXIR: {self.elixir:.1f} / {int(MAX_ELIXIR)}", bar_x + 8, bar_y + 8, WHITE, font_size=11, align_left=True)
-
-        for i, rect in enumerate(self.dock_rects):
-            u = self.dock_units[i]
-            bcol = u.color if u is not None else SLOT_BORDER
-            self._draw_rect(rect, SLOT_BG, border=bcol, width=1.5)
-            if u is not None:
-                self._draw_unit_art(u, rect.centerx, rect.centery - 6.0, show_name=False)
-                self._draw_label(str(UNIT_META[u.unit_type]["name"]), rect.centerx, rect.bottom - 10, u.color, font_size=11)
+        for idx, rect in enumerate(self.dock_rects):
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, SLOT_BG)
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, SLOT_BORDER, line_width=1.5)
+            u = self.dock_units[idx]
+            if u is not None and self.drag_source != ("dock", idx):
+                self._draw_unit_art(u, rect.centerx, rect.centery + 4, 18.0, show_aim=False)
 
         for utype, rect in self.spawn_btns:
             meta = UNIT_META[utype]
             cost = int(meta["cost"])
-            col = meta["color"]  # type: ignore
             can_buy = self.elixir >= cost
-            self._draw_rect(rect, SLOT_BG if can_buy else rgb(22, 24, 30), border=col if can_buy else GRAY, width=1.5)
-            self._draw_label(f"{meta['name']} ({cost})", rect.centerx, rect.y + 18, col if can_buy else GRAY, font_size=14)
-            self._draw_label(f"{meta['shape_name']} | {meta['tag']}", rect.centerx, rect.y + 40, WHITE if can_buy else GRAY, font_size=11)
+            col = meta["color"]  # type: ignore
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, SLOT_BG)
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, col if can_buy else GRAY, line_width=2.0)
+            self._draw_text(
+                str(meta["name"]),
+                rect.centerx,
+                rect.y + 8,
+                size=14,
+                color=col if can_buy else GRAY,
+                center=True,
+            )
+            self._draw_text(
+                f"{cost} ELIXIR",
+                rect.centerx,
+                rect.y + 30,
+                size=13,
+                color=PINK if can_buy else GRAY,
+                center=True,
+            )
 
-        self._draw_action_btn(self.btn_up_sniper, f"SNIPER+ ({self.sniper_up_cost})", f"LVL {self.sniper_up_lvl}", CYAN, self.elixir >= self.sniper_up_cost)
-        self._draw_action_btn(self.btn_up_gatling, f"GATLING+ ({self.gatling_up_cost})", f"LVL {self.gatling_up_lvl}", YELLOW, self.elixir >= self.gatling_up_cost)
-        self._draw_action_btn(self.btn_nova, "FROST NOVA", f"{int(self.nova_charge)}%", ICE, self.nova_charge >= 100.0)
+        self._draw_rect(self.btn_up_sniper.x, self.btn_up_sniper.y, self.btn_up_sniper.w, self.btn_up_sniper.h, SLOT_BG)
+        self._draw_rect(self.btn_up_sniper.x, self.btn_up_sniper.y, self.btn_up_sniper.w, self.btn_up_sniper.h, CYAN, line_width=1.5)
+        self._draw_text(
+            f"SNIPER+ L{self.sniper_up_lvl} ({self.sniper_up_cost})",
+            self.btn_up_sniper.centerx,
+            self.btn_up_sniper.y + 13,
+            size=12,
+            color=CYAN,
+            center=True,
+        )
 
-    def _draw_action_btn(self, rect: RectBox, title: str, sub: str, col: Tuple[float, float, float, float], active: bool):
-        self._draw_rect(rect, SLOT_BG if active else rgb(20, 23, 30), border=col if active else GRAY, width=1.5)
-        self._draw_label(title, rect.centerx, rect.y + 14, col if active else GRAY, font_size=11)
-        self._draw_label(sub, rect.centerx, rect.y + 32, WHITE if active else GRAY, font_size=11)
+        self._draw_rect(self.btn_up_gatling.x, self.btn_up_gatling.y, self.btn_up_gatling.w, self.btn_up_gatling.h, SLOT_BG)
+        self._draw_rect(self.btn_up_gatling.x, self.btn_up_gatling.y, self.btn_up_gatling.w, self.btn_up_gatling.h, YELLOW, line_width=1.5)
+        self._draw_text(
+            f"GATLING+ L{self.gatling_up_lvl} ({self.gatling_up_cost})",
+            self.btn_up_gatling.centerx,
+            self.btn_up_gatling.y + 13,
+            size=12,
+            color=YELLOW,
+            center=True,
+        )
 
-    def _draw_guide_modal(self):
-        self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), rgb(8, 11, 18, 0.95))
-        self._draw_label("UNIT & TACTICS GUIDE", SCREEN_WIDTH * 0.5, 75, CYAN, font_size=20)
+        nova_ready = self.nova_charge >= 1.0
+        self._draw_rect(self.btn_nova.x, self.btn_nova.y, self.btn_nova.w, self.btn_nova.h, SLOT_BG)
+        self._draw_rect(
+            self.btn_nova.x,
+            self.btn_nova.y,
+            self.btn_nova.w,
+            self.btn_nova.h,
+            CYAN if nova_ready else GRAY,
+            line_width=2.0,
+        )
+        nova_lbl = "NOVA READY!" if nova_ready else f"NOVA {int(self.nova_charge * 100)}%"
+        self._draw_text(
+            nova_lbl,
+            self.btn_nova.centerx,
+            self.btn_nova.y + 13,
+            size=12,
+            color=CYAN if nova_ready else GRAY,
+            center=True,
+        )
 
-        entries = [
-            ("sniper", "SNIPER [SQUARE]", "Cost 3 - 1 heavy shot, high dmg", CYAN, 165),
-            ("gatling", "GATLING [TRIANGLE]", "Cost 5 - Rapid spray, fast shots", YELLOW, 265),
-            ("mortar", "MORTAR [HEXAGON]", "Cost 7 - AoE blast + slow enemies", GREEN, 365),
-        ]
-        for utype, title_txt, desc_txt, col, yy in entries:
-            dummy = DefenseUnit(utype, tier=1, aim_angle=-0.4)
-            self._draw_unit_art(dummy, 62.0, float(yy), show_name=False)
-            self._draw_label(title_txt, 105, yy - 14, col, font_size=15, align_left=True)
-            self._draw_label(desc_txt, 105, yy + 8, WHITE, font_size=12, align_left=True)
+        bar_y = SCREEN_HEIGHT - 36
+        bar_w = SCREEN_WIDTH - 32
+        ratio = clamp(self.elixir / MAX_ELIXIR, 0.0, 1.0)
+        self._draw_rect(16, bar_y, bar_w, 22, SLOT_BG)
+        self._draw_rect(16, bar_y, bar_w * ratio, 22, PINK)
+        self._draw_rect(16, bar_y, bar_w, 22, SLOT_BORDER, line_width=1.5)
+        self._draw_text(
+            f"ELIXIR: {self.elixir:.1f} / {MAX_ELIXIR:.0f}",
+            SCREEN_WIDTH * 0.5,
+            bar_y + 3,
+            size=14,
+            color=WHITE,
+            center=True,
+        )
 
-        rules = [
-            "MERGE: Drag same type & tier onto each other -> Tier up!",
-            "DEPLOY: Drag dock units onto lane pads to fire.",
-            "ELIXIR: Slow regen + enemy kills + wave bonus.",
-            "NOVA: 100% slows & damages all lane enemies.",
-        ]
-        for i, line in enumerate(rules):
-            self._draw_label(line, 32, 455 + i * 34, GRAY if i % 2 else WHITE, font_size=12, align_left=True)
+    def _draw_title_screen(self):
+        self._draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BG_DARK)
+        self._draw_text("AEGIS PATH", SCREEN_WIDTH * 0.5, 220, size=42, color=CYAN, center=True)
+        self._draw_text("MERGE & ELIXIR DEFENSE", SCREEN_WIDTH * 0.5, 275, size=18, color=YELLOW, center=True)
+        self._draw_text(
+            f"BEST SCORE: {self.best_score}  |  BEST WAVE: {self.best_wave}",
+            SCREEN_WIDTH * 0.5,
+            335,
+            size=15,
+            color=PINK,
+            center=True,
+        )
+        self._draw_text("TAP ANYWHERE TO START", SCREEN_WIDTH * 0.5, 470, size=20, color=GREEN, center=True)
+        self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, SLOT_BG)
+        self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, CYAN, line_width=1.5)
+        self._draw_text("GUIDE", self.btn_guide.centerx, self.btn_guide.y + 5, size=11, color=CYAN, center=True)
 
-        self._draw_rect(self.btn_close_guide, SLOT_BG, border=GREEN, width=2.0)
-        self._draw_label("BACK TO GAME", self.btn_close_guide.centerx, self.btn_close_guide.centery, GREEN, font_size=15)
+    def _draw_guide_screen(self):
+        self._draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BG_DARK)
+        self._draw_text("HOW TO PLAY & STATS", SCREEN_WIDTH * 0.5, 36, size=24, color=CYAN, center=True)
 
-    def _draw_scene(self):
-        if self.state == "TITLE":
-            self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), BG_DARK)
-            self._draw_label("AEGIS PATH", SCREEN_WIDTH * 0.5, 340, CYAN, font_size=32)
-            self._draw_label("MERGE & ELIXIR DEFENSE", SCREEN_WIDTH * 0.5, 385, PURPLE, font_size=18)
-            self._draw_label("TAP ANYWHERE TO START", SCREEN_WIDTH * 0.5, 520, GREEN, font_size=18)
-            return
+        if self.info_texture is not None:
+            tex_w, tex_h = self.info_texture.size
+            top_y = 76.0
+            max_w = SCREEN_WIDTH - 24
+            max_h = self.btn_close_guide.y - 16.0 - top_y
+            scale = min(max_w / max(1.0, float(tex_w)), max_h / max(1.0, float(tex_h)))
+            draw_w = tex_w * scale
+            draw_h = tex_h * scale
+            draw_x = (SCREEN_WIDTH - draw_w) * 0.5
+            ky = to_ky(top_y + draw_h)
 
-        shake = self._shake_offset()
-        self._draw_lane_and_pads(shake)
+            Color(1.0, 1.0, 1.0, 1.0)
+            Rectangle(texture=self.info_texture, pos=(draw_x, ky), size=(draw_w, draw_h))
+        else:
+            lines = [
+                "1. SPAWN SNIPER, GATLING OR MORTAR USING ELIXIR.",
+                "2. DRAG UNITS ONTO TOWER PADS TO DEFEND THE LANE.",
+                "3. DRAG SAME TYPE + SAME TIER ONTO EACH OTHER TO MERGE (T1..T5).",
+                "4. DRAG ONTO SELL BUTTON TO REFUND PARTIAL ELIXIR.",
+                "5. USE PAUSE OR NOVA BAR TO CONTROL THE WAVE.",
+            ]
+            for i, line in enumerate(lines):
+                self._draw_text(line, SCREEN_WIDTH * 0.5, 180 + i * 54, size=13, color=WHITE, center=True)
+                self._draw_rect(self.btn_close_guide.x, self.btn_close_guide.y, self.btn_close_guide.w, self.btn_close_guide.h, SLOT_BG)
+        self._draw_rect(self.btn_close_guide.x, self.btn_close_guide.y, self.btn_close_guide.w, self.btn_close_guide.h, GREEN, line_width=2.0)
+        self._draw_text("BACK", self.btn_close_guide.centerx, self.btn_close_guide.y + 13, size=18, color=GREEN, center=True)
 
-        for pr in self.projectiles:
-            cx, cy = pr.x + shake[0], pr.y + shake[1]
-            self._draw_circle(cx, cy + 3.0, pr.radius * 0.8, SHADOW_COLOR)
-            self._draw_circle(cx, cy, pr.radius, pr.color)
-            self._draw_circle(cx, cy, max(2.0, pr.radius * 0.45), WHITE)
+    def _draw_pause_overlay(self):
+        self._draw_rect(0, ARENA_TOP, SCREEN_WIDTH, ARENA_BOTTOM - ARENA_TOP, rgb(6, 8, 12, 0.72))
+        self._draw_text("GAME PAUSED", SCREEN_WIDTH * 0.5, 290, size=32, color=YELLOW, center=True)
+        self._draw_text("TAP RESUME OR ARENA TO CONTINUE", SCREEN_WIDTH * 0.5, 345, size=16, color=GREEN, center=True)
 
-        for e in self.enemies:
-            cx, cy = e.x + shake[0], e.y + shake[1]
-            self._draw_circle(cx, cy + 4.5, e.radius, SHADOW_COLOR)
-            col = WHITE if e.hit_flash > 0 else (ICE if e.slow_timer > 0 else e.color)
-            sides = 8 if e.kind == "boss" else (6 if e.kind == "brute" else (3 if e.kind == "swift" else 4))
-            self._draw_poly(cx, cy, e.radius, sides, e.spin, BLACK)
-            Color(*col)
-            Line(points=self._poly_outline_coords(cx, cy, e.radius, sides, e.spin), close=True, width=2.2)
-            self._draw_circle(cx, cy, max(3.0, e.radius * 0.35), col)
+    def _draw_gameover_overlay(self):
+        self._draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, rgb(6, 8, 12, 0.78))
+        self._draw_text("BASE OVERRUN", SCREEN_WIDTH * 0.5, 320, size=34, color=RED, center=True)
+        self._draw_text(f"WAVE {self.wave}  |  SCORE {self.score}", SCREEN_WIDTH * 0.5, 375, size=20, color=YELLOW, center=True)
+        self._draw_text(
+            f"BEST SCORE: {self.best_score}  |  BEST WAVE: {self.best_wave}",
+            SCREEN_WIDTH * 0.5,
+            415,
+            size=16,
+            color=CYAN,
+            center=True,
+        )
+        self._draw_text("TAP TO PLAY AGAIN", SCREEN_WIDTH * 0.5, 475, size=18, color=GREEN, center=True)
 
-            bw = max(24.0, e.radius * 2.1)
-            bh = 5.0 if e.kind != "boss" else 7.0
-            bx = cx - bw * 0.5
-            by = cy - e.radius - 12.0
-            self._draw_rect(RectBox(bx, by, bw, bh), rgb(35, 40, 55))
-            ratio = clamp(e.hp / max(1.0, e.max_hp), 0.0, 1.0)
-            self._draw_rect(RectBox(bx, by, bw * ratio, bh), col)
-            if e.kind == "boss":
-                self._draw_label("BOSS", cx, by - 10, PINK, font_size=11)
-
-        for sw in self.shockwaves:
-            prog = 1.0 - clamp(sw.life / sw.max_life, 0.0, 1.0)
-            r = 6.0 + sw.max_radius * prog
-            alpha = (1.0 - prog) * 0.75
-            c = (sw.color[0], sw.color[1], sw.color[2], alpha)
-            self._draw_circle(sw.x + shake[0], sw.y + shake[1], r, (0, 0, 0, 0), outline=c, width=2.2)
-
-        for p in self.particles:
-            ratio = clamp(p.life / p.max_life, 0.0, 1.0)
-            c = (p.color[0] * ratio, p.color[1] * ratio, p.color[2] * ratio, ratio)
-            self._draw_circle(p.x + shake[0], p.y + shake[1], max(1.5, p.size * ratio), c)
-
-        for pop in self.popups:
-            alpha = clamp(pop.life / 0.75, 0.0, 1.0)
-            c = (pop.color[0], pop.color[1], pop.color[2], alpha)
-            self._draw_label(pop.text, pop.x + shake[0], pop.y + shake[1], c, font_size=14)
-
-        self._draw_top_hud()
-        self._draw_bottom_deck()
-
-        if self.drag_source is not None:
-            du = self._get_unit_at(self.drag_source)
-            if du is not None:
-                self._draw_unit_art(du, self.drag_pos[0], self.drag_pos[1], show_name=True)
-
-        if self.state == "GUIDE":
-            self._draw_guide_modal()
-        elif self.state == "GAME_OVER":
-            self._draw_rect(RectBox(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT), rgb(10, 8, 16, 0.84))
-            self._draw_label("BASE FALLEN", SCREEN_WIDTH * 0.5, 360, RED, font_size=30)
-            self._draw_label(f"SCORE: {self.score}   |   WAVE: {self.wave}", SCREEN_WIDTH * 0.5, 420, WHITE, font_size=17)
-            self._draw_label("TAP TO PLAY AGAIN", SCREEN_WIDTH * 0.5, 500, CYAN, font_size=16)
-
-    def render(self):
-        sx = max(0.01, float(self.width)) / SCREEN_WIDTH
-        sy = max(0.01, float(self.height)) / SCREEN_HEIGHT
-        self.canvas.clear()
-        with self.canvas:
-            PushMatrix()
-            Scale(sx, sy, 1)
-            self._draw_scene()
-            PopMatrix()
-
-    def step(self, dt: float):
-        self.update(min(0.05, dt))
-        self.render()
+    def on_parent(self, widget, parent):
+        if parent is None:
+            self._sync_best_stats()
+            self.audio.cleanup()
 
 
 class AegisPathApp(App):
     def build(self):
         self.title = TITLE
-        Window.clearcolor = BG_DARK
-        self.game_widget = AegisPathWidget()
-        return self.game_widget
-
-    def on_stop(self):
-        if hasattr(self, "game_widget"):
-            self.game_widget.audio.cleanup()
+        try:
+            Window.size = (SCREEN_WIDTH, SCREEN_HEIGHT)
+        except Exception:
+            pass
+        return AegisPathWidget()
 
 
 if __name__ == "__main__":
