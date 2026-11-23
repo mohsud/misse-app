@@ -24,9 +24,10 @@ from kivy.core.text import Label as CoreLabel
 from kivy.core.window import Window
 from kivy.graphics import Color, Ellipse, Line, PopMatrix, PushMatrix, Rectangle, Rotate, Scale, Translate
 from kivy.uix.widget import Widget
+from kivy.utils import platform
 
 # ==============================================================================
-# 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS.
+# 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS
 # ==============================================================================
 
 SCREEN_WIDTH = 540
@@ -694,8 +695,11 @@ class RectBox:
 class AegisPathWidget(Widget):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.size_hint = (1, 1)
+        self.size_hint = (None, None)
+        self.size = (Window.width, Window.height)
 
+        self.state = "TITLE"
+        self._state_before_guide = "TITLE"
         self._text_cache: Dict[Tuple[str, int], Tuple[object, int, int]] = {}
         self.best_score, self.best_wave = load_best_stats()
 
@@ -703,8 +707,6 @@ class AegisPathWidget(Widget):
         self.turret_textures: Dict[Tuple[str, int], object] = load_turret_textures()
         self.enemy_textures: Dict[str, object] = load_enemy_textures()
         self.info_texture: Optional[object] = load_info_texture()
-        self.state = "TITLE"
-        self._state_before_guide = "TITLE"
 
         self.btn_guide = RectBox(SCREEN_WIDTH - 92, 10, 78, 24)
         self.btn_pause = RectBox(SCREEN_WIDTH - 92, 40, 78, 24)
@@ -735,7 +737,11 @@ class AegisPathWidget(Widget):
         self._active_touch_uid: Optional[int] = None
 
         self.reset_game()
+        Window.bind(size=self._on_window_resize)
         Clock.schedule_interval(self.step, 1.0 / FPS)
+
+    def _on_window_resize(self, instance, value):
+        self.size = value
 
     def _sync_best_stats(self):
         updated = False
@@ -970,8 +976,8 @@ class AegisPathWidget(Widget):
     # --------------------------------------------------------------------------
 
     def _viewport_transform(self) -> Tuple[float, float, float]:
-        w = max(1.0, float(self.width))
-        h = max(1.0, float(self.height))
+        w = max(1.0, float(Window.width))
+        h = max(1.0, float(Window.height))
         scale = min(w / SCREEN_WIDTH, h / SCREEN_HEIGHT)
         off_x = (w - SCREEN_WIDTH * scale) * 0.5
         off_y = (h - SCREEN_HEIGHT * scale) * 0.5
@@ -985,6 +991,8 @@ class AegisPathWidget(Widget):
         return lx, ly
 
     def on_touch_down(self, touch):
+        if not hasattr(self, "state"):
+            return False
         lx, ly = self._event_to_logical(touch.x, touch.y)
 
         if self.state == "TITLE":
@@ -1183,7 +1191,7 @@ class AegisPathWidget(Widget):
                 if e.hp > 0 and dist(proj.x, proj.y, e.x, e.y) <= proj.radius + e.radius:
                     hit_enemy = e
                     break
-
+                
             if hit_enemy is not None:
                 if proj.splash_radius > 0.0:
                     self.shockwaves.append(
@@ -1200,7 +1208,7 @@ class AegisPathWidget(Widget):
                                 self._on_enemy_killed(e)
                 else:
                     hit_enemy.hp -= proj.damage
-                    hit_enemy.hit_flash = hit_enemy.hit_flash = 0.09
+                    hit_enemy.hit_flash = 0.09
                     self.audio.play("enemy_hit")
                     self._add_particles(proj.x, proj.y, proj.color, count=5, spd=85.0)
                     if hit_enemy.hp <= 0:
@@ -1451,7 +1459,7 @@ class AegisPathWidget(Widget):
 
         with self.canvas:
             Color(*BG_DARK)
-            Rectangle(pos=(0, 0), size=(self.width, self.height))
+            Rectangle(pos=(0, 0), size=(Window.width, Window.height))
 
             PushMatrix()
             Translate(off_x + sx * scale, off_y - sy * scale)
@@ -1692,7 +1700,8 @@ class AegisPathWidget(Widget):
             ]
             for i, line in enumerate(lines):
                 self._draw_text(line, SCREEN_WIDTH * 0.5, 180 + i * 54, size=13, color=WHITE, center=True)
-                self._draw_rect(self.btn_close_guide.x, self.btn_close_guide.y, self.btn_close_guide.w, self.btn_close_guide.h, SLOT_BG)
+
+        self._draw_rect(self.btn_close_guide.x, self.btn_close_guide.y, self.btn_close_guide.w, self.btn_close_guide.h, SLOT_BG)
         self._draw_rect(self.btn_close_guide.x, self.btn_close_guide.y, self.btn_close_guide.w, self.btn_close_guide.h, GREEN, line_width=2.0)
         self._draw_text("BACK", self.btn_close_guide.centerx, self.btn_close_guide.y + 13, size=18, color=GREEN, center=True)
 
@@ -1724,10 +1733,11 @@ class AegisPathWidget(Widget):
 class AegisPathApp(App):
     def build(self):
         self.title = TITLE
-        try:
-            Window.size = (SCREEN_WIDTH, SCREEN_HEIGHT)
-        except Exception:
-            pass
+        if platform not in ("android", "ios"):
+            try:
+                Window.size = (SCREEN_WIDTH, SCREEN_HEIGHT)
+            except Exception:
+                pass
         return AegisPathWidget()
 
 
