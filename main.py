@@ -696,6 +696,7 @@ class AegisPathWidget(Widget):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.size_hint = (None, None)
+        self.pos = (0, 0)
         self.size = (Window.width, Window.height)
 
         self.state = "TITLE"
@@ -978,7 +979,8 @@ class AegisPathWidget(Widget):
     def _viewport_transform(self) -> Tuple[float, float, float]:
         w = max(1.0, float(Window.width))
         h = max(1.0, float(Window.height))
-        scale = min(w / SCREEN_WIDTH, h / SCREEN_HEIGHT)
+        # Preserve the game's portrait aspect ratio and center it in the window.
+        scale = min(w / float(SCREEN_WIDTH), h / float(SCREEN_HEIGHT))
         off_x = (w - SCREEN_WIDTH * scale) * 0.5
         off_y = (h - SCREEN_HEIGHT * scale) * 0.5
         return scale, off_x, off_y
@@ -1463,7 +1465,7 @@ class AegisPathWidget(Widget):
 
             PushMatrix()
             Translate(off_x + sx * scale, off_y - sy * scale)
-            Scale(scale, scale, origin=(0, 0))
+            Scale(scale, scale, 1.0, origin=(0, 0))
 
             if self.state == "TITLE":
                 self._draw_title_screen()
