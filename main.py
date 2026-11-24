@@ -70,7 +70,45 @@ GREEN = rgb(55, 245, 140)
 ICE = rgb(110, 220, 255)
 
 MAX_ELIXIR = 10.0
-ELIXIR_REGEN_PER_SEC = 0.22
+BASE_ELIXIR_REGEN_PER_SEC = 0.30
+ELIXIR_REGEN_PER_SEC = BASE_ELIXIR_REGEN_PER_SEC
+
+DIFFICULTY_CONFIGS: Dict[str, Dict[str, object]] = {
+    "EASY": {
+        "label": "EASY",
+        "color": GREEN,
+        "elixir_regen": BASE_ELIXIR_REGEN_PER_SEC * 1.5,
+        "enemy_speed_mult": 0.70,
+        "enemy_hp_mult": 0.80,
+        "enemy_base_dmg_mult": 0.90,
+        "boss6_dmg_mult": 0.90,
+    },
+    "MEDIUM": {
+        "label": "MEDIUM",
+        "color": YELLOW,
+        "elixir_regen": BASE_ELIXIR_REGEN_PER_SEC,
+        "enemy_speed_mult": 1.0,
+        "enemy_hp_mult": 1.0,
+        "enemy_base_dmg_mult": 1.0,
+        "boss6_dmg_mult": 1.0,
+    },
+    "HARD": {
+        "label": "HARD",
+        "color": RED,
+        "elixir_regen": BASE_ELIXIR_REGEN_PER_SEC,
+        "enemy_speed_mult": 1.33,
+        "enemy_hp_mult": 1.30,
+        "enemy_base_dmg_mult": 1.33,
+        "boss6_dmg_mult": 1.35,
+    },
+}
+DIFFICULTY_ORDER = ["EASY", "MEDIUM", "HARD"]
+CURRENT_DIFFICULTY = "MEDIUM"
+
+
+def get_difficulty_cfg(diff: Optional[str] = None) -> Dict[str, object]:
+    key = diff or CURRENT_DIFFICULTY
+    return DIFFICULTY_CONFIGS.get(key, DIFFICULTY_CONFIGS["MEDIUM"])
 
 
 # ==============================================================================
@@ -159,7 +197,7 @@ RAW_LANE_ANCHORS: List[Tuple[float, float]] = [
 LANE_POINTS: List[Tuple[float, float]] = build_winding_lane(RAW_LANE_ANCHORS, steps_per_seg=14)
 
 TOWER_PADS: List[Tuple[float, float]] = [
-    (155.0, 168.0),
+    (120.0, 168.0),
     (305.0, 168.0),
     (430.0, 255.0),
     (275.0, 255.0),
@@ -170,6 +208,30 @@ TOWER_PADS: List[Tuple[float, float]] = [
 ]
 
 DOCK_SLOTS_COUNT = 6
+
+# Additional maps. All coordinates use the same top-down logical space.
+MAPS = [
+    {"name": "MAP 1 - AEGIS PATH", "lane": LANE_POINTS, "pads": TOWER_PADS},
+    {"name": "MAP 2 - VERTICAL",
+     "lane": [(270.0, 92.0), (270.0, 570.0)],
+     "pads": [(205.0, 145.0), (335.0, 145.0), (205.0, 245.0), (335.0, 245.0),
+              (205.0, 345.0), (335.0, 345.0), (205.0, 455.0), (335.0, 455.0)]},
+    {"name": "MAP 3 - SPIRAL",
+     "lane": [(65.0, 100.0), (65.0, 540.0), (475.0, 540.0),
+              (475.0, 100.0), (160.0, 100.0), (160.0, 430.0),
+              (380.0, 430.0), (380.0, 220.0), (260.0, 220.0),
+              (260.0, 340.0)],
+     "pads": [(112.0, 250.0), (427.0, 300.0),
+              (210.0, 165.0), (210.0, 350.0),
+              (320.0, 165.0), (320.0, 350.0),
+              (270.0, 485.0)]},
+    {"name": "MAP 4 - THREE RUNS",
+     "lane": [(80.0, 105.0), (80.0, 500.0), (250.0, 500.0),
+              (250.0, 105.0), (420.0, 105.0), (420.0, 500.0)],
+     "pads": [(165.0, 205.0), (165.0, 305.0), (165.0, 405.0),
+              (335.0, 205.0), (335.0, 305.0), (335.0, 405.0)]},
+]
+CURRENT_MAP = 0
 
 
 # ==============================================================================
@@ -188,6 +250,7 @@ ENEMY_FILE_NAMES: Dict[str, str] = {
     "brute": "enemy_3_round_drone.png",
     "spiked": "enemy_4_spiked_drone.png",
     "boss": "enemy_5_boss.png",
+    "boss6": "boss.png",
 }
 
 
@@ -255,15 +318,27 @@ def load_enemy_textures() -> Dict[str, object]:
     return textures
 
 
-def load_info_texture() -> Optional[object]:
-    info_path = os.path.join(resolve_assets_dir(), "info.png")
-    if os.path.exists(info_path):
-        try:
-            img = CoreImage(info_path)
-            return img.texture
-        except Exception as exc:
-            print(f"[ASSET ERROR] {info_path}: {exc}")
+def load_texture_by_name(filename: str) -> Optional[object]:
+    for candidate in (
+        os.path.join(resolve_assets_dir(), filename),
+        os.path.join(resolve_base_dir(), filename),
+    ):
+        if os.path.exists(candidate):
+            try:
+                img = CoreImage(candidate)
+                if img.texture is not None:
+                    return img.texture
+            except Exception as exc:
+                print(f"[ASSET ERROR] {candidate}: {exc}")
     return None
+
+
+def load_info_texture() -> Optional[object]:
+    return load_texture_by_name("info.png")
+
+
+def load_info2_texture() -> Optional[object]:
+    return load_texture_by_name("info2.png")
 
 
 # ==============================================================================
@@ -421,36 +496,57 @@ class LaneEnemy:
     seg_idx: int = 0
     x: float = LANE_POINTS[0][0]
     y: float = LANE_POINTS[0][1]
+    facing_angle: float = 0.0
     slow_timer: float = 0.0
     hit_flash: float = 0.0
     spin: float = 0.0
+    spin_direction: float = 1.0
+    tower_attack_timer: float = 2.0
 
     @classmethod
     def create(cls, kind: str, wave: int) -> "LaneEnemy":
-        scale = 1.0 + (wave - 1) * 0.24
+        cfg = get_difficulty_cfg()
+        hp_mult = float(cfg["enemy_hp_mult"])
+        spd_mult = float(cfg["enemy_speed_mult"])
+        dmg_mult = float(cfg["enemy_base_dmg_mult"])
+
+        scale = (1.0 + (wave - 1) * 0.24) * hp_mult
         specs = {
             "runner": (88.0, 58.0, 13.0, RED, 1, 0.06, 25),
             "swift": (62.0, 86.0, 11.0, ORANGE, 1, 0.08, 35),
             "brute": (235.0, 39.0, 18.0, PURPLE, 2, 0.15, 70),
             "spiked": (310.0, 48.0, 19.0, CYAN, 2, 0.18, 90),
             "boss": (1100.0, 30.0, 25.0, PINK, 6, 0.45, 300),
+            "boss6": (1650.0, 24.0, 31.0, PURPLE, 8, 0.70, 500),
         }
         hp, spd, rad, col, bdmg, rew, scr = specs[kind]
+        adj_bdmg = max(1, int(round(bdmg * dmg_mult)))
+        start_x, start_y = LANE_POINTS[0]
+        if len(LANE_POINTS) > 1:
+            first_dx = LANE_POINTS[1][0] - start_x
+            first_dy = LANE_POINTS[1][1] - start_y
+            initial_heading = -math.degrees(math.atan2(first_dy, first_dx))
+        else:
+            initial_heading = 0.0
         return cls(
             kind=kind,
             max_hp=hp * scale,
             hp=hp * scale,
-            speed=spd * (1.0 + min(0.50, (wave - 1) * 0.035)),
+            speed=spd * (1.0 + min(0.50, (wave - 1) * 0.035)) * spd_mult,
             radius=rad,
             color=col,
-            base_dmg=bdmg,
+            base_dmg=adj_bdmg,
             elixir_reward=rew,
             score_reward=scr,
+            x=start_x,
+            y=start_y,
+            facing_angle=initial_heading,
         )
 
     def update(self, dt: float) -> bool:
         self.hit_flash = max(0.0, self.hit_flash - dt)
-        self.spin += dt * (4.5 if self.kind in ("swift", "spiked") else 1.8)
+        spin_rate = 4.5 if self.kind in ("swift", "spiked") else 1.8
+        self.spin += dt * spin_rate * self.spin_direction
 
         mult = 1.0
         if self.slow_timer > 0:
@@ -460,7 +556,15 @@ class LaneEnemy:
         move_left = self.speed * mult * dt
         while move_left > 0 and self.seg_idx < len(LANE_POINTS) - 1:
             tx, ty = LANE_POINTS[self.seg_idx + 1]
-            d = dist(self.x, self.y, tx, ty)
+            dx = tx - self.x
+            dy = ty - self.y
+            d = math.hypot(dx, dy)
+            if d > 0:
+                self.facing_angle = -math.degrees(math.atan2(dy, dx))
+                if abs(dx) >= abs(dy):
+                    self.spin_direction = 1.0 if dx > 0 else -1.0
+                else:
+                    self.spin_direction = 1.0 if dy > 0 else -1.0
             if d <= move_left and d > 0:
                 self.x, self.y = tx, ty
                 move_left -= d
@@ -546,9 +650,17 @@ UNIT_META: Dict[str, Dict[str, object]] = {
 class DefenseUnit:
     unit_type: str
     tier: int = 1
+    hp: float = 0.0
+    max_hp: float = 0.0
     cooldown: float = 0.0
     aim_angle: float = 0.0
     recoil: float = 0.0
+
+    def __post_init__(self):
+        tier_hp = {1: 100.0, 2: 150.0, 3: 225.0, 4: 337.0, 5: 506.0}
+        self.max_hp = tier_hp.get(self.tier, 100.0)
+        if self.hp <= 0:
+            self.hp = self.max_hp
 
     @property
     def color(self) -> Tuple[float, float, float, float]:
@@ -592,17 +704,15 @@ class DefenseUnit:
 
         rng = self.get_range()
         best_enemy: Optional[LaneEnemy] = None
-        best_score = -1.0
+        best_distance = float("inf")
 
         for e in enemies:
             if e.hp <= 0:
                 continue
             d = dist(pos[0], pos[1], e.x, e.y)
-            if d <= rng:
-                progress = e.seg_idx * 1000.0 - d * 0.1
-                if progress > best_score:
-                    best_score = progress
-                    best_enemy = e
+            if d <= rng and d < best_distance:
+                best_distance = d
+                best_enemy = e
 
         if best_enemy is not None:
             self.aim_angle = math.atan2(best_enemy.y - pos[1], best_enemy.x - pos[0])
@@ -707,9 +817,19 @@ class AegisPathWidget(Widget):
         self.audio = AudioEngine()
         self.turret_textures: Dict[Tuple[str, int], object] = load_turret_textures()
         self.enemy_textures: Dict[str, object] = load_enemy_textures()
+        self.healer_texture: Optional[object] = None
+        healer_path = os.path.join(resolve_assets_dir(), "hel.png")
+        if os.path.exists(healer_path):
+            try:
+                self.healer_texture = CoreImage(healer_path).texture
+            except Exception as exc:
+                print(f"[ASSET ERROR] {healer_path}: {exc}")
         self.info_texture: Optional[object] = load_info_texture()
+        self.info2_texture: Optional[object] = load_info2_texture()
 
         self.btn_guide = RectBox(SCREEN_WIDTH - 92, 10, 78, 24)
+        self.difficulty_rects = [RectBox(44 + i * 156, 200, 140, 44) for i in range(3)]
+        self.map_select_rects = [RectBox(54, 275 + i * 88, 432, 62) for i in range(4)]
         self.btn_pause = RectBox(SCREEN_WIDTH - 92, 40, 78, 24)
         self.btn_close_guide = RectBox(SCREEN_WIDTH // 2 - 90, SCREEN_HEIGHT - 86, 180, 48)
         self.btn_sell = RectBox(SCREEN_WIDTH // 2 - 96, DECK_TOP - 36, 192, 30)
@@ -744,6 +864,11 @@ class AegisPathWidget(Widget):
     def _on_window_resize(self, instance, value):
         self.size = value
 
+    def _apply_difficulty_regen(self):
+        global ELIXIR_REGEN_PER_SEC
+        cfg = get_difficulty_cfg()
+        ELIXIR_REGEN_PER_SEC = float(cfg["elixir_regen"])
+
     def _sync_best_stats(self):
         updated = False
         if self.score > self.best_score:
@@ -756,6 +881,7 @@ class AegisPathWidget(Widget):
             save_best_stats(self.best_score, self.best_wave)
 
     def reset_game(self):
+        self._apply_difficulty_regen()
         self.elixir = 2.0
         self.base_hp = 20
         self.max_base_hp = 20
@@ -771,9 +897,16 @@ class AegisPathWidget(Widget):
         self.nova_charge = 0.0
 
         self.pad_units: List[Optional[DefenseUnit]] = [None] * len(TOWER_PADS)
+        self.healer_tier = 0
+        self.healer_upgrade_paid = 0.0
+        self.healer_timer = 0.0
+        self.healer_target: Optional[Tuple[int, float, float]] = None
+        # Map 3 healer placed inside the inner spiral corridor away from the lane.
+        self.healer_pos_by_map = [(485.0, 555.0), (475.0, 555.0), (320.0, 280.0), (485.0, 555.0)]
         self.dock_units: List[Optional[DefenseUnit]] = [None] * DOCK_SLOTS_COUNT
 
         self.drag_source: Optional[Tuple[str, int]] = None
+        self.selected_unit_loc: Optional[Tuple[str, int]] = None
         self.drag_pos: Tuple[float, float] = (0.0, 0.0)
         self._active_touch_uid = None
 
@@ -781,6 +914,7 @@ class AegisPathWidget(Widget):
         self.projectiles: List[LaneProjectile] = []
         self.particles: List[Particle] = []
         self.shockwaves: List[Shockwave] = []
+        self.boss_lasers: List[Tuple[float, float, float, float, float]] = []
         self.popups: List[FloatingPopup] = []
 
         self.spawn_queue: List[str] = []
@@ -810,6 +944,8 @@ class AegisPathWidget(Widget):
                 seq.append("spiked")
         if has_boss:
             seq.append("boss")
+        if w >= 15 and w % 5 == 0:
+            seq.append("boss6")
         self.spawn_queue = seq
         self.spawn_timer = 0.7
 
@@ -887,6 +1023,7 @@ class AegisPathWidget(Widget):
 
         if self._can_merge(u_src, u_dst):
             merged = DefenseUnit(u_src.unit_type, tier=u_src.tier + 1)
+            merged.hp = merged.max_hp
             self._set_unit_at(src, None)
             self._set_unit_at(dst, merged)
             self.audio.play("merge")
@@ -896,7 +1033,7 @@ class AegisPathWidget(Widget):
             tx, ty = self._loc_center(dst)
             self._add_particles(tx, ty, merged.color, count=16, spd=150.0)
             self.shockwaves.append(Shockwave(tx, ty, 44.0, merged.color, 0.30, 0.30))
-            self._add_popup(tx, ty - 14, f"T{merged.tier} MERGE!", merged.color)
+            self._add_popup(tx, ty - 14, f"T{merged.tier} MERGE! HP {merged.hp:.0f}/{merged.max_hp:.0f}", merged.color)
             return
 
         self._set_unit_at(src, u_dst)
@@ -979,7 +1116,6 @@ class AegisPathWidget(Widget):
     def _viewport_transform(self) -> Tuple[float, float, float]:
         w = max(1.0, float(Window.width))
         h = max(1.0, float(Window.height))
-        # Preserve the game's portrait aspect ratio and center it in the window.
         scale = min(w / float(SCREEN_WIDTH), h / float(SCREEN_HEIGHT))
         off_x = (w - SCREEN_WIDTH * scale) * 0.5
         off_y = (h - SCREEN_HEIGHT * scale) * 0.5
@@ -1002,8 +1138,29 @@ class AegisPathWidget(Widget):
                 self._state_before_guide = "TITLE"
                 self.state = "GUIDE"
             else:
-                self.reset_game()
-                self.state = "PLAYING"
+                self.state = "MAP_SELECT"
+            return True
+
+        if self.state == "MAP_SELECT":
+            if self.btn_guide.collidepoint(lx, ly):
+                self._state_before_guide = "MAP_SELECT"
+                self.state = "GUIDE"
+                return True
+            for d_idx, rect in enumerate(self.difficulty_rects):
+                if rect.collidepoint(lx, ly):
+                    global CURRENT_DIFFICULTY
+                    CURRENT_DIFFICULTY = DIFFICULTY_ORDER[d_idx]
+                    self._apply_difficulty_regen()
+                    return True
+            for map_idx, rect in enumerate(self.map_select_rects):
+                if rect.collidepoint(lx, ly):
+                    global CURRENT_MAP, LANE_POINTS, TOWER_PADS
+                    CURRENT_MAP = map_idx
+                    LANE_POINTS = MAPS[map_idx]["lane"]
+                    TOWER_PADS = MAPS[map_idx]["pads"]
+                    self.reset_game()
+                    self.state = "PLAYING"
+                    break
             return True
 
         if self.state == "GUIDE":
@@ -1034,9 +1191,15 @@ class AegisPathWidget(Widget):
             self.state = "PAUSED"
             return True
 
+        hx, hy = self._healer_position()
+        if dist(lx, ly, hx, hy) <= 38.0:
+            self._tap_healer_spot()
+            return True
+
         for idx, (px, py) in enumerate(TOWER_PADS):
             if dist(lx, ly, px, py) <= 34.0 and self.pad_units[idx] is not None:
                 self.drag_source = ("pad", idx)
+                self.selected_unit_loc = ("pad", idx)
                 self.drag_pos = (lx, ly)
                 self._active_touch_uid = touch.uid
                 touch.grab(self)
@@ -1045,6 +1208,7 @@ class AegisPathWidget(Widget):
         for idx, rect in enumerate(self.dock_rects):
             if rect.collidepoint(lx, ly) and self.dock_units[idx] is not None:
                 self.drag_source = ("dock", idx)
+                self.selected_unit_loc = ("dock", idx)
                 self.drag_pos = (lx, ly)
                 self._active_touch_uid = touch.uid
                 touch.grab(self)
@@ -1111,8 +1275,14 @@ class AegisPathWidget(Widget):
                 else:
                     dst = self._find_drop_target(lx, ly)
                     if dst is not None:
-                        self._handle_drop(self.drag_source, dst)
+                        src_loc = self.drag_source
+                        self._handle_drop(src_loc, dst)
+                        if self._get_unit_at(dst) is not None:
+                            self.selected_unit_loc = dst
+                        elif self._get_unit_at(src_loc) is not None:
+                            self.selected_unit_loc = src_loc
             self.drag_source = None
+            self.selected_unit_loc = None
             self._active_touch_uid = None
             return True
         return False
@@ -1138,7 +1308,103 @@ class AegisPathWidget(Widget):
         self.shake_mag = max(0.0, self.shake_mag - dt * 28.0)
         self.particles = [p for p in self.particles if p.update(dt)]
         self.shockwaves = [s for s in self.shockwaves if s.update(dt)]
+        self.boss_lasers = [(x1, y1, x2, y2, life - dt) for x1, y1, x2, y2, life in self.boss_lasers if life - dt > 0]
         self.popups = [p for p in self.popups if p.update(dt)]
+
+    def _healer_position(self) -> Tuple[float, float]:
+        return self.healer_pos_by_map[min(CURRENT_MAP, len(self.healer_pos_by_map) - 1)]
+
+    def _healer_upgrade_cost(self) -> int:
+        costs = {1: 8, 2: 9, 3: 10, 4: 15}
+        return costs.get(self.healer_tier, 0)
+
+    def _tap_healer_spot(self):
+        if self.healer_tier == 0:
+            cost = 10
+            if self.elixir < cost:
+                self._add_popup(*self._healer_position(), "NEED 10 ELIXIR", RED)
+                return
+            self.elixir -= cost
+            self.healer_tier = 1
+            self.healer_upgrade_paid = 0.0
+            self._add_popup(*self._healer_position(), "HEALER T1", GREEN)
+            self.audio.play("spawn")
+            return
+        if self.healer_tier >= 5:
+            self._add_popup(*self._healer_position(), "HEALER MAX", YELLOW)
+            return
+        cost = self._healer_upgrade_cost()
+        remaining = max(0.0, cost - self.healer_upgrade_paid)
+        payment = min(self.elixir, remaining)
+        if payment <= 0:
+            self._add_popup(*self._healer_position(), f"REMAIN {remaining:.0f}", YELLOW)
+            return
+        self.elixir -= payment
+        self.healer_upgrade_paid += payment
+        if self.healer_upgrade_paid + 1e-6 >= cost:
+            self.healer_tier += 1
+            self.healer_upgrade_paid = 0.0
+            self._add_popup(*self._healer_position(), f"HEALER T{self.healer_tier}", GREEN)
+            self.audio.play("merge")
+        else:
+            remain = cost - self.healer_upgrade_paid
+            self._add_popup(*self._healer_position(), f"PAID {self.healer_upgrade_paid:.0f}/{cost}  LEFT {remain:.0f}", YELLOW)
+
+    def _boss6_tier_for_wave(self) -> int:
+        if self.wave < 15:
+            return 0
+        return min(5, 1 + (self.wave - 15) // 5)
+
+    def _update_healer(self, dt: float):
+        self.healer_target = None
+        if self.healer_tier <= 0:
+            return
+        self.healer_tier = max(self.healer_tier, self._boss6_tier_for_wave())
+        self.healer_timer = max(0.0, self.healer_timer - dt)
+        damaged = [(i, u) for i, u in enumerate(self.pad_units) if u is not None and u.hp < u.max_hp]
+        if not damaged:
+            return
+        target_idx, target_unit = min(damaged, key=lambda pair: pair[1].hp / max(1.0, pair[1].max_hp))
+        tx, ty = TOWER_PADS[target_idx]
+        self.healer_target = (target_idx, tx, ty)
+        if self.healer_timer <= 0.0:
+            heal = 7.0 + self.healer_tier * 3.0
+            old_hp = target_unit.hp
+            target_unit.hp = min(target_unit.max_hp, target_unit.hp + heal)
+            actual_heal = target_unit.hp - old_hp
+            self.healer_timer = max(1.65, 2.55 - self.healer_tier * 0.12)
+            if actual_heal > 0.01:
+                self._add_popup(tx, ty + 26, f"+{actual_heal:.0f} HP  {target_unit.hp:.0f}/{target_unit.max_hp:.0f}", GREEN)
+                self._add_particles(tx, ty, GREEN, count=5, spd=65.0)
+
+    def _boss6_attack_towers(self, enemy: LaneEnemy, dt: float):
+        if enemy.kind != "boss6":
+            return
+        enemy.tower_attack_timer -= dt
+        if enemy.tower_attack_timer > 0.0:
+            return
+        candidates = [(i, u, dist(enemy.x, enemy.y, *TOWER_PADS[i]))
+                     for i, u in enumerate(self.pad_units) if u is not None]
+        candidates = [c for c in candidates if c[2] <= 125.0]
+        if not candidates:
+            enemy.tower_attack_timer = 0.45
+            return
+        idx, unit, _ = min(candidates, key=lambda c: c[2])
+        tier = max(1, self._boss6_tier_for_wave())
+        boss6_mult = float(get_difficulty_cfg()["boss6_dmg_mult"])
+        damage = (25.0 + max(0, tier - 1) * 5.0) * boss6_mult
+        unit.hp -= damage
+        enemy.tower_attack_timer = max(0.90, 1.50 - max(0, tier - 1) * 0.10)
+        tx, ty = TOWER_PADS[idx]
+        self.boss_lasers.append((enemy.x, enemy.y, tx, ty, 0.42))
+        self._add_particles(tx, ty, RED, count=10, spd=110.0)
+        self._add_popup(tx, ty + 28, f"-{damage:.0f} HP", RED)
+        self._add_particles(tx, ty, RED, count=5, spd=80.0)
+        self.shake_mag = 2.0
+        if unit.hp <= 0:
+            self.pad_units[idx] = None
+            self._add_popup(tx, ty, "TOWER DESTROYED", RED)
+            self._add_particles(tx, ty, RED, count=16, spd=120.0)
 
     def _update_playing(self, dt: float):
         self.elixir = min(MAX_ELIXIR, self.elixir + ELIXIR_REGEN_PER_SEC * dt)
@@ -1148,7 +1414,7 @@ class AegisPathWidget(Widget):
             if self.spawn_timer <= 0.0:
                 kind = self.spawn_queue.pop(0)
                 self.enemies.append(LaneEnemy.create(kind, self.wave))
-                self.spawn_timer = 0.55 if kind == "swift" else 0.92
+                self.spawn_timer = 0.55 if kind == "swift" else (1.25 if kind == "boss6" else 0.92)
         elif not self.enemies:
             self.wave += 1
             self._sync_best_stats()
@@ -1158,6 +1424,7 @@ class AegisPathWidget(Widget):
 
         for e in list(self.enemies):
             reached_end = e.update(dt)
+            self._boss6_attack_towers(e, dt)
             if reached_end:
                 if e in self.enemies:
                     self.enemies.remove(e)
@@ -1169,6 +1436,8 @@ class AegisPathWidget(Widget):
                     self._sync_best_stats()
                     self.state = "GAMEOVER"
                     return
+
+        self._update_healer(dt)
 
         for idx, unit in enumerate(self.pad_units):
             if unit is not None:
@@ -1193,7 +1462,7 @@ class AegisPathWidget(Widget):
                 if e.hp > 0 and dist(proj.x, proj.y, e.x, e.y) <= proj.radius + e.radius:
                     hit_enemy = e
                     break
-                
+
             if hit_enemy is not None:
                 if proj.splash_radius > 0.0:
                     self.shockwaves.append(
@@ -1299,7 +1568,7 @@ class AegisPathWidget(Widget):
 
         if tex is not None:
             sprite_size = r * 2.5
-            deg = -math.degrees(e.spin) if e.kind in ("swift", "spiked") else 0.0
+            deg = e.facing_angle + math.degrees(e.spin)
             PushMatrix()
             Rotate(angle=deg, origin=(e.x, ky))
             if e.hit_flash > 0:
@@ -1334,6 +1603,15 @@ class AegisPathWidget(Widget):
                 self._draw_circle(e.x, e.y, r * 0.65, PANEL_BG)
                 self._draw_poly_points(pts, col, line_width=2.5)
                 self._draw_circle(e.x, e.y, r * 0.32, col)
+            elif e.kind == "boss6":
+                pts = []
+                for k in range(10):
+                    a = e.spin * 0.2 + k * (math.tau / 10.0)
+                    rr = r if k % 2 == 0 else r * 0.66
+                    pts.append((e.x + math.cos(a) * rr, e.y + math.sin(a) * rr))
+                self._draw_circle(e.x, e.y, r * 0.68, PANEL_BG)
+                self._draw_poly_points(pts, col, line_width=3.5)
+                self._draw_circle(e.x, e.y, r * 0.38, PURPLE if e.hit_flash <= 0 else WHITE)
             else:
                 pts = []
                 for k in range(8):
@@ -1403,6 +1681,28 @@ class AegisPathWidget(Widget):
             color=unit.color,
             center=True,
         )
+        hp_ratio = clamp(unit.hp / max(1.0, unit.max_hp), 0.0, 1.0)
+        bar_w = radius * 2.0
+        self._draw_rect(cx - bar_w / 2, cy - radius - 9, bar_w, 4, BLACK)
+        self._draw_rect(cx - bar_w / 2, cy - radius - 9, bar_w * hp_ratio, 4,
+                        GREEN if hp_ratio > 0.4 else RED)
+
+    def _draw_selected_unit_overlay(self):
+        if self.selected_unit_loc is None or self.selected_unit_loc == self.drag_source:
+            return
+        unit = self._get_unit_at(self.selected_unit_loc)
+        if unit is None:
+            self.selected_unit_loc = None
+            return
+        cx, cy = self._loc_center(self.selected_unit_loc)
+        rng = unit.get_range()
+        self._draw_circle(cx, cy, rng, (unit.color[0], unit.color[1], unit.color[2], 0.055))
+        self._draw_circle(cx, cy, rng, (unit.color[0], unit.color[1], unit.color[2], 0.30), line_width=1.2)
+        hp_ratio = clamp(unit.hp / max(1.0, unit.max_hp), 0.0, 1.0)
+        hp_color = GREEN if hp_ratio > 0.4 else RED
+        self._draw_rect(cx - 39, cy + 34, 78, 17, BLACK)
+        self._draw_rect(cx - 37, cy + 36, 74 * hp_ratio, 13, hp_color)
+        self._draw_text(f"HP {unit.hp:.0f}/{unit.max_hp:.0f}", cx, cy + 38, size=10, color=WHITE, center=True)
 
     def _draw_drag_overlays(self):
         if self.drag_source is None:
@@ -1416,6 +1716,7 @@ class AegisPathWidget(Widget):
 
         self._draw_circle(dx, dy, rng, (dragged.color[0], dragged.color[1], dragged.color[2], 0.10))
         self._draw_circle(dx, dy, rng, (dragged.color[0], dragged.color[1], dragged.color[2], 0.65), line_width=1.6)
+        self._draw_text(f"HP {dragged.hp:.0f}/{dragged.max_hp:.0f}", dx, dy + 42, size=12, color=GREEN if dragged.hp / max(1.0, dragged.max_hp) > 0.4 else RED, center=True)
 
         for idx, (px, py) in enumerate(TOWER_PADS):
             if self.drag_source == ("pad", idx):
@@ -1469,12 +1770,15 @@ class AegisPathWidget(Widget):
 
             if self.state == "TITLE":
                 self._draw_title_screen()
+            elif self.state == "MAP_SELECT":
+                self._draw_map_select_screen()
             elif self.state == "GUIDE":
                 self._draw_guide_screen()
             else:
                 self._draw_arena()
                 self._draw_top_bar()
                 self._draw_bottom_deck()
+                self._draw_selected_unit_overlay()
                 self._draw_drag_overlays()
                 if self.state == "PAUSED":
                     self._draw_pause_overlay()
@@ -1516,6 +1820,39 @@ class AegisPathWidget(Widget):
             if u is not None and self.drag_source != ("pad", idx):
                 self._draw_unit_art(u, px, py, 19.0, show_aim=True)
 
+        hx, hy = self._healer_position()
+        self._draw_circle(hx, hy, 28, SLOT_BG)
+        self._draw_circle(hx, hy, 28, GREEN if self.healer_tier else SLOT_BORDER, line_width=2.2)
+        if self.healer_tier > 0:
+            if self.healer_texture is not None:
+                Color(1, 1, 1, 1)
+                Rectangle(texture=self.healer_texture, pos=(hx - 26, to_ky(hy + 26)), size=(52, 52))
+            else:
+                self._draw_circle(hx, hy, 18, GREEN)
+                self._draw_rect(hx - 4, hy - 12, 8, 24, WHITE)
+                self._draw_rect(hx - 12, hy - 4, 24, 8, WHITE)
+            self._draw_text(f"T{self.healer_tier}", hx, hy + 34, size=11, color=GREEN, center=True)
+            if self.healer_tier < 5:
+                cost = self._healer_upgrade_cost()
+                if self.healer_upgrade_paid > 0:
+                    self._draw_text(f"{self.healer_upgrade_paid:.0f}/{cost}", hx, hy - 38, size=10, color=YELLOW, center=True)
+                else:
+                    self._draw_text(f"UP {cost}", hx, hy - 38, size=10, color=GREEN, center=True)
+        else:
+            self._draw_text("HEALER 10", hx, hy - 38, size=10, color=GREEN, center=True)
+        if self.healer_target is not None:
+            _, tx, ty = self.healer_target
+            Color(0.25, 1.0, 0.25, 0.75)
+            Line(points=[hx, to_ky(hy), tx, to_ky(ty)], width=2.5)
+            self._draw_circle(tx, ty, 24, GREEN, line_width=2.0)
+
+        for x1, y1, x2, y2, life in self.boss_lasers:
+            alpha = clamp(life / 0.42, 0.0, 1.0)
+            Color(1.0, 0.12, 0.20, alpha * 0.95)
+            Line(points=[x1, to_ky(y1), x2, to_ky(y2)], width=5.0)
+            Color(1.0, 0.75, 0.80, alpha)
+            Line(points=[x1, to_ky(y1), x2, to_ky(y2)], width=1.7)
+
         for e in self.enemies:
             self._draw_enemy_shape(e)
 
@@ -1554,7 +1891,7 @@ class AegisPathWidget(Widget):
         )
         self._draw_text(f"SCORE {self.score}", 138, 10, size=15, color=YELLOW)
         self._draw_text(f"BEST {self.best_score} (W{self.best_wave})", 138, 38, size=12, color=CYAN)
-        self._draw_text(f"KILLS {self.kills}", 320, 12, size=13, color=GRAY)
+        self._draw_text(f"KILLS {self.kills} [{CURRENT_DIFFICULTY[0]}]", 314, 12, size=12, color=get_difficulty_cfg()["color"])
 
         self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, SLOT_BG)
         self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, CYAN, line_width=1.5)
@@ -1670,35 +2007,78 @@ class AegisPathWidget(Widget):
             color=PINK,
             center=True,
         )
-        self._draw_text("TAP ANYWHERE TO START", SCREEN_WIDTH * 0.5, 470, size=20, color=GREEN, center=True)
+        self._draw_text("TAP TO CHOOSE A MAP", SCREEN_WIDTH * 0.5, 470, size=20, color=GREEN, center=True)
         self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, SLOT_BG)
         self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, CYAN, line_width=1.5)
         self._draw_text("GUIDE", self.btn_guide.centerx, self.btn_guide.y + 5, size=11, color=CYAN, center=True)
+
+    def _draw_map_select_screen(self):
+        self._draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BG_DARK)
+        self._draw_text("SELECT DIFFICULTY & MAP", SCREEN_WIDTH * 0.5, 82, size=28, color=CYAN, center=True)
+        self._draw_text("Choose difficulty first, then tap a map", SCREEN_WIDTH * 0.5, 132, size=15, color=GRAY, center=True)
+
+        for d_idx, rect in enumerate(self.difficulty_rects):
+            d_key = DIFFICULTY_ORDER[d_idx]
+            d_cfg = DIFFICULTY_CONFIGS[d_key]
+            d_col = d_cfg["color"]  # type: ignore
+            selected = (d_key == CURRENT_DIFFICULTY)
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, SLOT_BG)
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, d_col if selected else SLOT_BORDER, line_width=2.5 if selected else 1.5)
+            self._draw_text(
+                str(d_cfg["label"]),
+                rect.centerx,
+                rect.y + 12,
+                size=15,
+                color=d_col if selected else GRAY,
+                center=True,
+            )
+
+        descriptions = ["Original winding route", "Straight vertical lane", "Spiral toward the center", "Long straight zigzag route"]
+        for i, rect in enumerate(self.map_select_rects):
+            accent = [CYAN, GREEN, PURPLE, ORANGE][i]
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, SLOT_BG)
+            self._draw_rect(rect.x, rect.y, rect.w, rect.h, accent, line_width=2.0)
+            self._draw_text(MAPS[i]["name"], rect.centerx, rect.y + 11, size=17, color=accent, center=True)
+            self._draw_text(descriptions[i], rect.centerx, rect.y + 37, size=12, color=WHITE, center=True)
+        self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, SLOT_BG)
+        self._draw_rect(self.btn_guide.x, self.btn_guide.y, self.btn_guide.w, self.btn_guide.h, CYAN, line_width=1.5)
+        self._draw_text("GUIDE", self.btn_guide.centerx, self.btn_guide.y + 5, size=11, color=CYAN, center=True)
+
+    def _draw_fitted_texture(self, tex: object, box_x: float, box_y: float, box_w: float, box_h: float):
+        tex_w, tex_h = tex.size
+        scale = min(box_w / max(1.0, float(tex_w)), box_h / max(1.0, float(tex_h)))
+        draw_w = tex_w * scale
+        draw_h = tex_h * scale
+        draw_x = box_x + (box_w - draw_w) * 0.5
+        draw_y = box_y + (box_h - draw_h) * 0.5
+        ky = to_ky(draw_y + draw_h)
+        Color(1.0, 1.0, 1.0, 1.0)
+        Rectangle(texture=tex, pos=(draw_x, ky), size=(draw_w, draw_h))
 
     def _draw_guide_screen(self):
         self._draw_rect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, BG_DARK)
         self._draw_text("HOW TO PLAY & STATS", SCREEN_WIDTH * 0.5, 36, size=24, color=CYAN, center=True)
 
-        if self.info_texture is not None:
-            tex_w, tex_h = self.info_texture.size
-            top_y = 76.0
-            max_w = SCREEN_WIDTH - 24
-            max_h = self.btn_close_guide.y - 16.0 - top_y
-            scale = min(max_w / max(1.0, float(tex_w)), max_h / max(1.0, float(tex_h)))
-            draw_w = tex_w * scale
-            draw_h = tex_h * scale
-            draw_x = (SCREEN_WIDTH - draw_w) * 0.5
-            ky = to_ky(top_y + draw_h)
+        top_y = 76.0
+        avail_h = self.btn_close_guide.y - 16.0 - top_y
+        max_w = SCREEN_WIDTH - 24.0
 
-            Color(1.0, 1.0, 1.0, 1.0)
-            Rectangle(texture=self.info_texture, pos=(draw_x, ky), size=(draw_w, draw_h))
+        if self.info_texture is not None and self.info2_texture is not None:
+            gap = 12.0
+            half_h = (avail_h - gap) * 0.5
+            self._draw_fitted_texture(self.info_texture, 12.0, top_y, max_w, half_h)
+            self._draw_fitted_texture(self.info2_texture, 12.0, top_y + half_h + gap, max_w, half_h)
+        elif self.info_texture is not None:
+            self._draw_fitted_texture(self.info_texture, 12.0, top_y, max_w, avail_h)
+        elif self.info2_texture is not None:
+            self._draw_fitted_texture(self.info2_texture, 12.0, top_y, max_w, avail_h)
         else:
             lines = [
                 "1. SPAWN SNIPER, GATLING OR MORTAR USING ELIXIR.",
                 "2. DRAG UNITS ONTO TOWER PADS TO DEFEND THE LANE.",
                 "3. DRAG SAME TYPE + SAME TIER ONTO EACH OTHER TO MERGE (T1..T5).",
                 "4. DRAG ONTO SELL BUTTON TO REFUND PARTIAL ELIXIR.",
-                "5. USE PAUSE OR NOVA BAR TO CONTROL THE WAVE.",
+                "5. HEALER HELPS RECOVER TOWERS; BOSS6 FIRES LASER & DAMAGES TOWERS.",
             ]
             for i, line in enumerate(lines):
                 self._draw_text(line, SCREEN_WIDTH * 0.5, 180 + i * 54, size=13, color=WHITE, center=True)
