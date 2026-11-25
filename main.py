@@ -27,7 +27,7 @@ from kivy.uix.widget import Widget
 from kivy.utils import platform
 
 # ==============================================================================
-# 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS
+# 1. PORTRAIT MOBILE DISPLAY & PALETTE CONSTANTS 
 # ==============================================================================
 
 SCREEN_WIDTH = 540
